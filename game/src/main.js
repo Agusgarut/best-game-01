@@ -57,6 +57,7 @@ const g = {
   piecesPlaced: 0,
   drag: null,
   selected: null,
+  selHover: null,
   particles: [],
   popups: [],
   banner: null,
@@ -100,6 +101,7 @@ function startLevel(n) {
   g.tray = dealTray(trayRng);
   g.drag = null;
   g.selected = null;
+  g.selHover = null;
   g.particles = [];
   g.popups = [];
   g.banner = null;
@@ -120,6 +122,7 @@ function startClassic() {
   g.tray = dealTray(trayRng);
   g.drag = null;
   g.selected = null;
+  g.selHover = null;
   g.particles = [];
   g.popups = [];
   g.banner = null;
@@ -309,23 +312,106 @@ function toGame(e) {
   };
 }
 function buttonAt(x, y) {
+  // Generous hit area: buttons are small on a phone screen.
+  const PAD = 6;
   for (const b of g.ui.buttons) {
-    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.id;
+    if (x >= b.x - PAD && x <= b.x + b.w + PAD && y >= b.y - PAD && y <= b.y + b.h + PAD) return b.id;
   }
   return null;
 }
 function mapNodeAt(x, y) {
   for (const n of g.ui.mapNodes) {
-    if (Math.hypot(x - n.x, y - n.y) <= n.r) return n;
+    if (Math.hypot(x - n.x, y - n.y) <= n.r + 14) return n;
   }
   return null;
 }
 function slotAt(x, y) {
+  // Expanded slots: the gaps between slots and the whole tray panel count,
+  // so starting a drag never needs a precise hit.
   for (let i = 0; i < 3; i++) {
     const s = traySlot(i);
-    if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return i;
+    if (x >= s.x - 11 && x <= s.x + s.w + 11 && y >= L.trayY && y <= L.trayY + L.trayH) return i;
+  }
+  // Inside the slots' span but between two slots: take the nearest slot.
+  if (y >= L.trayY && y <= L.trayY + L.trayH) {
+    const first = traySlot(0), last = traySlot(2);
+    if (x >= first.x - 11 && x <= last.x + last.w + 11) {
+      let best = -1, bestD = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const s = traySlot(i);
+        const d = Math.abs(x - (s.x + s.w / 2));
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
   }
   return -1;
+}
+
+function shapeDims(piece) {
+  return {
+    rows: Math.max(...piece.shape.cells.map(([r]) => r)) + 1,
+    cols: Math.max(...piece.shape.cells.map(([, c]) => c)) + 1,
+  };
+}
+// First fitting top-left anchor in the 3x3 neighbourhood of (r0, c0):
+// the snap that makes placement forgiving on a small screen.
+function findSnap(piece, r0, c0) {
+  const order = [[0, 0], [0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  for (const [dr, dc] of order) {
+    if (fitsPiece(g.grid, piece, r0 + dr, c0 + dc)) return { r: r0 + dr, c: c0 + dc };
+  }
+  return null;
+}
+// Top-left anchor for a piece whose centre sits at game point (ax, ay).
+function anchorFromCenter(piece, ax, ay) {
+  const { rows, cols } = shapeDims(piece);
+  return {
+    r: Math.floor((ay - (rows * L.pitch) / 2 - L.boardY) / L.pitch),
+    c: Math.floor((ax - (cols * L.pitch) / 2 - L.boardX) / L.pitch),
+  };
+}
+// Top-left anchor that centres the piece on the tapped board cell.
+function anchorForCell(piece, cell) {
+  const { rows, cols } = shapeDims(piece);
+  return { r: cell.r - Math.floor(rows / 2), c: cell.c - Math.floor(cols / 2) };
+}
+// How far above the fingertip a touch-dragged piece floats (game units):
+// the piece bottom clears the fingertip by FINGER_CLEAR_CSS screen px.
+const FINGER_CLEAR_CSS = 40;
+function touchLift(piece) {
+  const rect = canvas.getBoundingClientRect();
+  const scale = rect.width / 1280;
+  const { rows } = shapeDims(piece);
+  return (rows * L.pitch) / 2 + FINGER_CLEAR_CSS / scale;
+}
+// Keep a dragged piece fully on screen.
+function clampAnchor(piece, ax, ay) {
+  const { rows, cols } = shapeDims(piece);
+  const halfW = (cols * L.pitch) / 2, halfH = (rows * L.pitch) / 2;
+  return {
+    x: Math.min(Math.max(ax, halfW + 6), 1280 - halfW - 6),
+    y: Math.min(Math.max(ay, halfH + 6), 720 - halfH - 6),
+  };
+}
+// Recompute a drag's anchor + ghost from the latest pointer position.
+function updateDrag(d, p) {
+  const ax = p.x;
+  const ay = (d.pointerType === 'touch' && d.lifted) ? p.y - d.lift : p.y;
+  const a = clampAnchor(d.piece, ax, ay);
+  d.x = a.x; d.y = a.y;
+  let r, c;
+  if (d.fromSelect && !d.moved) {
+    // Press-and-hold on a cell with a selected piece: aim at the cell.
+    const cell = boardCellAt(p.x, p.y);
+    if (!cell) { d.hover = null; d.fits = false; return; }
+    ({ r, c } = anchorForCell(d.piece, cell));
+  } else {
+    ({ r, c } = anchorFromCenter(d.piece, a.x, a.y));
+  }
+  const snap = findSnap(d.piece, r, c);
+  if (snap) { d.hover = snap; d.fits = true; }
+  else { d.hover = { r, c }; d.fits = false; }
 }
 
 function handleButton(id) {
@@ -366,7 +452,13 @@ let downPos = null;
 let downBtn = null;
 
 canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  // Capture the pointer so the drag keeps tracking the finger even if it
+  // slides off the canvas edge mid-drag.
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* older browser */ }
   const p = toGame(e);
+  // A second finger never hijacks an active drag.
+  if (g.drag && e.pointerId !== g.drag.pointerId) return;
   downPos = p;
   const btn = buttonAt(p.x, p.y);
   if (btn) { downBtn = btn; g.pressBtn = btn; return; }
@@ -376,48 +468,73 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (g.mode !== 'play' || g.locked) return;
+  const isTouch = e.pointerType === 'touch';
   const slot = slotAt(p.x, p.y);
   if (slot >= 0) {
     const piece = g.tray[slot];
     if (piece && !piece.used) {
-      g.drag = { piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot };
+      // Picked up from the tray: on touch the piece lifts above the
+      // finger at once, so the grab is visible immediately.
+      g.drag = {
+        piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot,
+        pointerId: e.pointerId, pointerType: e.pointerType,
+        lift: isTouch ? touchLift(piece) : 0, lifted: isTouch,
+        fromSelect: false,
+      };
+      g.selected = null;
+      g.selHover = null;
+      updateDrag(g.drag, p);
       sfx.pick();
     }
     return;
   }
-  // Click-select fallback: a selected piece drops on the clicked board cell.
+  // Press on the board with a selected piece: aim, then release to place.
+  // No lift until the finger actually moves, so a plain tap places the
+  // piece centred on the tapped cell.
   if (g.selected) {
-    const cell = boardCellAt(p.x, p.y);
-    if (cell && fitsPiece(g.grid, g.selected, cell.r, cell.c)) {
-      placePiece(g.selected, cell.r, cell.c);
-      g.selected = null;
-    } else {
-      g.selected = null;
-    }
+    const piece = g.selected;
+    g.drag = {
+      piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot: -1,
+      pointerId: e.pointerId, pointerType: e.pointerType,
+      lift: isTouch ? touchLift(piece) : 0, lifted: false,
+      fromSelect: true,
+    };
+    g.selected = null;
+    g.selHover = null;
+    updateDrag(g.drag, p);
+    sfx.pick();
   }
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  const p = toGame(e);
+  // Coalesced events give every intermediate touch point, so the drag
+  // tracks the finger smoothly instead of jumping between samples.
+  const evts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  const p = toGame(evts[evts.length - 1]);
   g.hoverBtn = buttonAt(p.x, p.y);
-  if (!g.drag) return;
-  g.drag.x = p.x;
-  g.drag.y = p.y;
-  if (Math.hypot(p.x - downPos.x, p.y - downPos.y) > 6) g.drag.moved = true;
-  const piece = g.drag.piece;
-  const rows = Math.max(...piece.shape.cells.map(([r]) => r)) + 1;
-  const cols = Math.max(...piece.shape.cells.map(([, c]) => c)) + 1;
-  const topX = p.x - (cols * L.pitch) / 2;
-  const topY = p.y - (rows * L.pitch) / 2;
-  const c = Math.floor((topX - L.boardX) / L.pitch);
-  const r = Math.floor((topY - L.boardY) / L.pitch);
-  if (r < 0 || r >= GRID || c < 0 || c >= GRID) {
-    g.drag.hover = null;
-    g.drag.fits = false;
+  if (g.drag) {
+    const d = g.drag;
+    if (e.pointerId !== d.pointerId) return;
+    const thresh = d.pointerType === 'touch' ? 16 : 6;
+    if (!d.moved && downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > thresh) {
+      d.moved = true;
+      // The piece lifts off the finger the moment the drag really starts.
+      if (d.pointerType === 'touch') d.lifted = true;
+    }
+    updateDrag(d, p);
     return;
   }
-  g.drag.hover = { r, c };
-  g.drag.fits = fitsPiece(g.grid, piece, r, c);
+  if (g.selected && g.mode === 'play' && !g.locked) {
+    // Desktop hover preview for the selected piece.
+    const cell = boardCellAt(p.x, p.y);
+    if (cell) {
+      const a = anchorForCell(g.selected, cell);
+      const snap = findSnap(g.selected, a.r, a.c);
+      g.selHover = snap ? { r: snap.r, c: snap.c, fits: true } : { r: a.r, c: a.c, fits: false };
+    } else {
+      g.selHover = null;
+    }
+  }
 });
 
 canvas.addEventListener('pointerup', (e) => {
@@ -426,23 +543,45 @@ canvas.addEventListener('pointerup', (e) => {
     if (buttonAt(p.x, p.y) === downBtn) handleButton(downBtn);
     downBtn = null;
     g.pressBtn = null;
+    downPos = null;
     return;
   }
   if (g.drag) {
     const d = g.drag;
+    if (e.pointerId !== d.pointerId) return;
     g.drag = null;
-    if (d.hover && d.fits) {
-      placePiece(d.piece, d.hover.r, d.hover.c);
-    } else if (!d.moved) {
-      // A tap selects the piece (click-to-place mode).
+    if (!d.moved && !d.fromSelect) {
+      // A tap on a tray piece selects it (tap-to-place mode) — a tap
+      // must never place the piece straight away, even when the lifted
+      // anchor happens to hover over a fitting spot.
       g.selected = d.piece;
       sfx.click();
+    } else if (d.hover && d.fits) {
+      placePiece(d.piece, d.hover.r, d.hover.c);
+      g.selected = null;
     } else {
+      // Invalid drop (or a tap on a cell the piece cannot fit): the piece
+      // goes back to the tray and any selection is cleared.
       sfx.deny();
+      g.selected = null;
     }
+    g.selHover = null;
   }
   downPos = null;
 });
+
+// A cancelled gesture (browser took the touch back) drops the piece back
+// in the tray instead of leaving a drag stuck on screen.
+canvas.addEventListener('pointercancel', (e) => {
+  if (g.drag && e.pointerId === g.drag.pointerId) g.drag = null;
+  downBtn = null;
+  g.pressBtn = null;
+  downPos = null;
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// Belt and braces: the canvas never scrolls, even if the browser ignores
+// touch-action for a gesture that starts on it.
+canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'm' || e.key === 'M') {
