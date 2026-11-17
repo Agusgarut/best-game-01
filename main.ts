@@ -1,4 +1,4 @@
-// ORBITAL entry program (Node 22, standard library only): the game is this
+// AMBLAST entry program (Node 22, standard library only): the game is this
 // directory's game/ folder — plain static files a desktop browser loads
 // offline (game/index.html and its ES modules, no library, no network
 // request) — and the program hands it in. It copies game/ and screenshots/
