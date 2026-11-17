@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>AMBLAST — gem block puzzle</title>
 <link rel="icon" href="data:,">
 <style>
@@ -12,6 +12,7 @@
     background: #04041a;
     height: 100%;
     overflow: hidden;
+    overscroll-behavior: none;
   }
   body {
     display: flex;
@@ -24,6 +25,12 @@
     height: min(100vh, calc(100vw * 9 / 16));
     cursor: crosshair;
     background: #04041a;
+    /* Without this, a phone treats a drag as a scroll/zoom gesture and the
+       browser steals the pointer mid-drag, so pieces stop following the finger. */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 </style>
 </head>
