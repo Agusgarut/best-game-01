@@ -376,15 +376,11 @@ function anchorForCell(piece, cell) {
   const { rows, cols } = shapeDims(piece);
   return { r: cell.r - Math.floor(rows / 2), c: cell.c - Math.floor(cols / 2) };
 }
-// How far above the fingertip a touch-dragged piece floats (game units):
-// the piece bottom clears the fingertip by FINGER_CLEAR_CSS screen px.
-const FINGER_CLEAR_CSS = 40;
-function touchLift(piece) {
-  const rect = canvas.getBoundingClientRect();
-  const scale = rect.width / 1280;
-  const { rows } = shapeDims(piece);
-  return (rows * L.pitch) / 2 + FINGER_CLEAR_CSS / scale;
-}
+// The dragged piece sits ON the fingertip (Block Blast style): its centre
+// is the pointer, and the ghost is computed from that same point, so what
+// the player sees is exactly where the piece will land. No lift — an early
+// version floated the piece above the finger while the ghost followed the
+// fingertip, and the two visibly disagreed by ~2 rows on a phone screen.
 // Keep a dragged piece fully on screen.
 function clampAnchor(piece, ax, ay) {
   const { rows, cols } = shapeDims(piece);
@@ -395,10 +391,11 @@ function clampAnchor(piece, ax, ay) {
   };
 }
 // Recompute a drag's anchor + ghost from the latest pointer position.
+// The dragged piece is drawn centred on the pointer (d.x, d.y), and the
+// ghost anchor is computed from that same point, so piece and ghost are
+// concentric: the piece lands exactly where the ghost shows.
 function updateDrag(d, p) {
-  const ax = p.x;
-  const ay = (d.pointerType === 'touch' && d.lifted) ? p.y - d.lift : p.y;
-  const a = clampAnchor(d.piece, ax, ay);
+  const a = clampAnchor(d.piece, p.x, p.y);
   d.x = a.x; d.y = a.y;
   let r, c;
   if (d.fromSelect && !d.moved) {
@@ -407,11 +404,10 @@ function updateDrag(d, p) {
     if (!cell) { d.hover = null; d.fits = false; return; }
     ({ r, c } = anchorForCell(d.piece, cell));
   } else {
-    // The landing spot follows the FINGER, not the lifted piece: the piece
-    // is drawn above the finger so it stays visible, but the player aims
-    // with their fingertip. If the ghost followed the lifted piece, the
-    // top rows would be unreachable — with the finger on row 0 the piece
-    // sits above the board (hover r=-2, no ghost, release denied).
+    // The landing spot follows the pointer: the piece is drawn centred on
+    // the fingertip, so the anchor from the fingertip is the anchor of the
+    // piece the player sees. findSnap then nudges to the nearest fitting
+    // spot, and the ghost shows exactly where the piece will land.
     ({ r, c } = anchorFromCenter(d.piece, p.x, p.y));
   }
   const snap = findSnap(d.piece, r, c);
@@ -473,17 +469,15 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (g.mode !== 'play' || g.locked) return;
-  const isTouch = e.pointerType === 'touch';
   const slot = slotAt(p.x, p.y);
   if (slot >= 0) {
     const piece = g.tray[slot];
     if (piece && !piece.used) {
-      // Picked up from the tray: on touch the piece lifts above the
-      // finger at once, so the grab is visible immediately.
+      // Picked up from the tray: the piece appears centred on the finger,
+      // so the grab is visible immediately and the piece is where it lands.
       g.drag = {
         piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot,
         pointerId: e.pointerId, pointerType: e.pointerType,
-        lift: isTouch ? touchLift(piece) : 0, lifted: isTouch,
         fromSelect: false,
       };
       g.selected = null;
@@ -494,14 +488,12 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   // Press on the board with a selected piece: aim, then release to place.
-  // No lift until the finger actually moves, so a plain tap places the
-  // piece centred on the tapped cell.
+  // A plain tap places the piece centred on the tapped cell.
   if (g.selected) {
     const piece = g.selected;
     g.drag = {
       piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot: -1,
       pointerId: e.pointerId, pointerType: e.pointerType,
-      lift: isTouch ? touchLift(piece) : 0, lifted: false,
       fromSelect: true,
     };
     g.selected = null;
@@ -523,8 +515,6 @@ canvas.addEventListener('pointermove', (e) => {
     const thresh = d.pointerType === 'touch' ? 16 : 6;
     if (!d.moved && downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > thresh) {
       d.moved = true;
-      // The piece lifts off the finger the moment the drag really starts.
-      if (d.pointerType === 'touch') d.lifted = true;
     }
     updateDrag(d, p);
     return;
@@ -557,8 +547,8 @@ canvas.addEventListener('pointerup', (e) => {
     g.drag = null;
     if (!d.moved && !d.fromSelect) {
       // A tap on a tray piece selects it (tap-to-place mode) — a tap
-      // must never place the piece straight away, even when the lifted
-      // anchor happens to hover over a fitting spot.
+      // must never place the piece straight away, even when the drag
+      // happens to hover over a fitting spot.
       g.selected = d.piece;
       sfx.click();
     } else if (d.hover && d.fits) {
