@@ -92,4 +92,18 @@ export const sfx = {
   click() {
     tone(700, 700, 0.06, 'square', 0.05);
   },
+  power() {
+    // Rising arpeggio for a power-up pickup.
+    [660, 880, 1320].forEach((f, i) =>
+      setTimeout(() => tone(f, f, 0.18, 'triangle', 0.14), i * 70),
+    );
+  },
+  shield() {
+    // Metallic ping when the shield absorbs a crash.
+    tone(1200, 900, 0.3, 'square', 0.08);
+    noise(0.15, 0.1, 4000);
+  },
+  slow() {
+    tone(800, 200, 0.5, 'sine', 0.12);
+  },
 };

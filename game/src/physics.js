@@ -1,9 +1,11 @@
-// ORBITAL physics: gravity, probe motion, trajectory preview, collisions.
+// ORBITAL physics: gravity, probe motion, trajectory preview, collisions,
+// orbiting planets and drifting asteroids.
 // Pure functions over plain state — no DOM, no canvas — so the trajectory
 // preview simulates exactly the same rules the live game plays by.
 
 export const PROBE_R = 9;
 export const STAR_R = 26; // collect radius (the drawn star is smaller)
+export const POWERUP_R = 28; // collect radius for power-ups
 export const MAX_SPEED = 900;
 
 // One gravity step for a point mass. planets: [{x,y,r,mu}].
@@ -68,6 +70,40 @@ export function firstImpact(planets, s, dt, maxSteps) {
     for (const p of planets) {
       if (Math.hypot(cur.x - p.x, cur.y - p.y) < p.r + PROBE_R) return p;
     }
+  }
+  return null;
+}
+
+// Move orbiting planets to their positions at level time t (seconds).
+// Planets without an orbit stay put. Mutates the live planet copies.
+export function updatePlanets(planets, t) {
+  for (const p of planets) {
+    if (!p.orbit) continue;
+    const o = p.orbit;
+    const a = o.phase + t * o.speed;
+    p.x = o.cx + Math.cos(a) * o.r;
+    p.y = o.cy + Math.sin(a) * o.r;
+  }
+}
+
+// Drift asteroids and wrap them around the playfield edges.
+export function updateAsteroids(asteroids, dt, W, H) {
+  for (const a of asteroids) {
+    a.x += a.vx * dt;
+    a.y += a.vy * dt;
+    a.rot += a.rotSpeed * dt;
+    const m = a.r + 30;
+    if (a.x < -m) a.x += W + m * 2;
+    if (a.x > W + m) a.x -= W + m * 2;
+    if (a.y < -m) a.y += H + m * 2;
+    if (a.y > H + m) a.y -= H + m * 2;
+  }
+}
+
+// First asteroid the probe overlaps, or null.
+export function asteroidHit(asteroids, x, y) {
+  for (const a of asteroids) {
+    if (Math.hypot(x - a.x, y - a.y) < a.r + PROBE_R - 2) return a;
   }
   return null;
 }

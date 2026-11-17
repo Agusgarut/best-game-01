@@ -3,7 +3,7 @@
 
 import { W, H } from './levels.js';
 
-// actions: { start, launch, restart, toggleMute, skipClear }
+// actions: { start, launch, restart, toggleMute, skipClear, dismissBrief }
 export function attachInput(canvas, g, actions) {
   const toLogical = (e) => {
     const r = canvas.getBoundingClientRect();
@@ -30,6 +30,10 @@ export function attachInput(canvas, g, actions) {
     e.preventDefault();
     if (g.mode === 'title') {
       actions.start();
+      return;
+    }
+    if (g.mode === 'brief') {
+      actions.dismissBrief();
       return;
     }
     if (g.mode === 'clear') {
@@ -75,6 +79,11 @@ export function attachInput(canvas, g, actions) {
     if (g.mode === 'over' && (k === ' ' || k === 'enter')) {
       e.preventDefault();
       actions.restart();
+      return;
+    }
+    if (g.mode === 'brief' && (k === ' ' || k === 'enter')) {
+      e.preventDefault();
+      actions.dismissBrief();
       return;
     }
     if (g.mode === 'clear' && (k === ' ' || k === 'enter')) {
