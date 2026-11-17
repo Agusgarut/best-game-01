@@ -315,19 +315,30 @@ function drawBoard(ctx, g) {
     }
   }
 
-  // Ghost preview for the dragged piece.
-  if (g.drag && g.drag.hover) {
-    const p = g.drag.piece;
+  // Ghost preview: the dragged piece, or the selected piece under the
+  // mouse — the exact cells it would fill, so the landing spot is obvious.
+  const ghost = g.drag && g.drag.hover
+    ? { piece: g.drag.piece, hover: g.drag.hover, fits: g.drag.fits }
+    : (g.selected && g.selHover
+      ? { piece: g.selected, hover: g.selHover, fits: g.selHover.fits }
+      : null);
+  if (ghost) {
+    const p = ghost.piece;
     for (const [dr, dc] of p.shape.cells) {
-      const r = g.drag.hover.r + dr, c = g.drag.hover.c + dc;
+      const r = ghost.hover.r + dr, c = ghost.hover.c + dc;
       if (r < 0 || r >= GRID || c < 0 || c >= GRID) continue;
       const { x, y } = cellXY(r, c);
       rr(ctx, x + 3, y + 3, L.cell - 6, L.cell - 6, 9);
-      ctx.fillStyle = g.drag.fits ? 'rgba(74,222,128,0.55)' : 'rgba(239,68,68,0.55)';
+      ctx.fillStyle = ghost.fits ? 'rgba(74,222,128,0.55)' : 'rgba(239,68,68,0.55)';
       ctx.fill();
-      ctx.strokeStyle = g.drag.fits ? '#4ade80' : '#ef4444';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = ghost.fits ? '#4ade80' : '#ef4444';
+      ctx.lineWidth = 3;
       ctx.stroke();
+      // The piece itself, semi-transparent, so its exact shape reads clearly.
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      drawTile(ctx, x + 3, y + 3, L.cell - 6, p.color);
+      ctx.restore();
     }
   }
 }
@@ -362,10 +373,10 @@ function drawTray(ctx, g) {
   ctx.font = `900 15px ${TITLE_FONT}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText('DRAG A PIECE  ➜', L.trayX + 18, L.trayY + 24);
+  ctx.fillText(g.selected ? '✓  PIECE SELECTED' : 'DRAG A PIECE  ➜', L.trayX + 18, L.trayY + 24);
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.font = `700 13px ${BODY_FONT}`;
-  ctx.fillText('drop it on the board — fill a line!', L.trayX + 18, L.trayY + 46);
+  ctx.fillText(g.selected ? 'Tap a board cell to place it!' : 'drop it on the board — fill a line!', L.trayX + 18, L.trayY + 46);
   for (let i = 0; i < 3; i++) {
     const slot = traySlot(i);
     const piece = g.tray[i];
@@ -375,11 +386,19 @@ function drawTray(ctx, g) {
     ctx.strokeStyle = piece && !piece.used ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
     ctx.lineWidth = 2;
     ctx.stroke();
+    // Selected piece (tap-to-place): bright outline so the choice is
+    // unmistakable at a glance.
+    if (piece && !piece.used && g.selected === piece) {
+      rr(ctx, slot.x - 3, slot.y - 3, slot.w + 6, slot.h + 6, 16);
+      ctx.strokeStyle = '#fde68a';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
     if (!piece || piece.used) continue;
-    if (g.drag && g.drag.piece === piece) continue; // drawn at the mouse
+    if (g.drag && g.drag.piece === piece) continue; // drawn at the pointer
     const bob = Math.sin(g.time * 2 + i * 1.7) * 2;
     const cell = Math.min(30, 132 / Math.max(...piece.shape.cells.map(([, c]) => c + 1)), 76 / Math.max(...piece.shape.cells.map(([r]) => r + 1)));
-    drawPieceCells(ctx, piece, slot.x + slot.w / 2, slot.y + slot.h / 2 + bob, cell);
+    drawPieceCells(ctx, piece, slot.x + slot.w / 2, slot.y + slot.h / 2 + bob - (g.selected === piece ? 5 : 0), cell);
   }
   // The dragged piece is drawn after the side panel (drawDrag), so it is
   // never hidden behind the panel.
