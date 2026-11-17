@@ -407,7 +407,12 @@ function updateDrag(d, p) {
     if (!cell) { d.hover = null; d.fits = false; return; }
     ({ r, c } = anchorForCell(d.piece, cell));
   } else {
-    ({ r, c } = anchorFromCenter(d.piece, a.x, a.y));
+    // The landing spot follows the FINGER, not the lifted piece: the piece
+    // is drawn above the finger so it stays visible, but the player aims
+    // with their fingertip. If the ghost followed the lifted piece, the
+    // top rows would be unreachable — with the finger on row 0 the piece
+    // sits above the board (hover r=-2, no ghost, release denied).
+    ({ r, c } = anchorFromCenter(d.piece, p.x, p.y));
   }
   const snap = findSnap(d.piece, r, c);
   if (snap) { d.hover = snap; d.fits = true; }
