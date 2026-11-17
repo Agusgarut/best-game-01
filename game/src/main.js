@@ -61,6 +61,7 @@ const g = {
   particles: [],
   popups: [],
   banner: null,
+  clearToast: null,
   lineFlash: null,
   pendingClear: null,
   shake: 0,
@@ -78,6 +79,7 @@ const g = {
   bgFloaters: bg.bgFloaters,
   bgSparkles: bg.bgSparkles,
   bgConfetti: bg.bgConfetti,
+  bgPuzzle: bg.bgPuzzle,
   ui: { buttons: [], mapNodes: [] },
 };
 g.starsTotal = Object.values(g.stars).reduce((a, b) => a + b, 0);
@@ -105,6 +107,7 @@ function startLevel(n) {
   g.particles = [];
   g.popups = [];
   g.banner = null;
+  g.clearToast = null;
   g.lineFlash = null;
   g.pendingClear = null;
   g.locked = false;
@@ -126,6 +129,7 @@ function startClassic() {
   g.particles = [];
   g.popups = [];
   g.banner = null;
+  g.clearToast = null;
   g.lineFlash = null;
   g.pendingClear = null;
   g.locked = false;
@@ -273,7 +277,24 @@ function executeClear() {
     });
   });
   const cx = L.boardX + 4 * L.pitch;
-  addPopup(cx, L.boardY - 8, `+${pts}`, '#fde68a', true);
+  // Floating score text over the board, with the combo when one is hot.
+  addPopup(cx, 150, g.combo >= 2 ? `+${pts}  COMBO x${g.combo}` : `+${pts}`, '#fde68a', true);
+  // "N lines blasted" toast on the board's bottom edge.
+  g.clearToast = { n: lineCount, life: 1.6, max: 1.6 };
+  // Celebration confetti bursting from the cleared lines.
+  const confettiColors = ['#f97316', '#22c55e', '#eab308', '#ec4899', '#38bdf8', '#a855f7'];
+  for (let i = 0; i < 26; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = 120 + Math.random() * 260;
+    g.particles.push({
+      kind: 'confetti', x: cx + (Math.random() - 0.5) * 320, y: 300 + (Math.random() - 0.5) * 180,
+      vx: Math.cos(a) * v, vy: Math.sin(a) * v - 140,
+      life: 1.1 + Math.random() * 0.5, max: 1.6,
+      color: confettiColors[i % confettiColors.length],
+      size: 7 + Math.random() * 6, rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 12,
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
   if (g.combo >= 2) {
     g.banner = { text: `COMBO x${g.combo}!`, sub: `${lineCount} line${lineCount > 1 ? 's' : ''} blasted`, color: '#fb923c', life: 1.0, max: 1.0 };
     sfx.combo(g.combo);
@@ -620,11 +641,17 @@ function frame(ts) {
       p.y += (p.vy || 0) * dt;
       if (p.vy !== undefined) p.vy += 420 * dt;
       if (p.rot !== undefined) p.rot += (p.vr || 0) * dt;
+      // Confetti flutters side to side as it falls.
+      if (p.kind === 'confetti') p.x += Math.sin(g.time * 7 + (p.phase || 0)) * 26 * dt;
     }
   }
   g.particles = g.particles.filter((p) => p.life > 0);
   for (const pop of g.popups) pop.life -= dt;
   g.popups = g.popups.filter((p) => p.life > 0);
+  if (g.clearToast) {
+    g.clearToast.life -= dt;
+    if (g.clearToast.life <= 0) g.clearToast = null;
+  }
   if (g.banner) {
     g.banner.life -= dt;
     if (g.banner.life <= 0) g.banner = null;

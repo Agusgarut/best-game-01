@@ -146,14 +146,14 @@ function drawStone(ctx, x, y, s) {
 }
 
 // ---- Buttons: drawn and registered for hit-testing ----
-function drawButton(ctx, g, id, x, y, w, h, label, fill, dark, textColor = '#fff', font = 22, active = true) {
+function drawButton(ctx, g, id, x, y, w, h, label, fill, dark, textColor = '#fff', font = 22, active = true, radius = 14) {
   const hov = g.hoverBtn === id;
   const press = g.pressBtn === id;
   const dy = press ? 2 : 0;
-  rr(ctx, x, y + 4 + dy, w, h, 14);
+  rr(ctx, x, y + 4 + dy, w, h, radius);
   ctx.fillStyle = dark;
   ctx.fill();
-  rr(ctx, x, y + dy, w, h, 14);
+  rr(ctx, x, y + dy, w, h, radius);
   const grad = ctx.createLinearGradient(x, y, x, y + h);
   grad.addColorStop(0, fill);
   grad.addColorStop(1, dark);
@@ -163,7 +163,7 @@ function drawButton(ctx, g, id, x, y, w, h, label, fill, dark, textColor = '#fff
   ctx.lineWidth = 2;
   ctx.stroke();
   if (hov) {
-    rr(ctx, x - 2, y - 2 + dy, w + 4, h + 4, 16);
+    rr(ctx, x - 2, y - 2 + dy, w + 4, h + 4, radius + 2);
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.lineWidth = 2.5;
     ctx.stroke();
@@ -189,38 +189,22 @@ function pill(ctx, x, y, w, h, fill, stroke = 'rgba(255,255,255,0.35)') {
   ctx.stroke();
 }
 
-// ---- Busy candy background ----
+// ---- Bright-blue sky background ----
 export function drawBackground(ctx, g) {
   const t = g.time;
   const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, '#1d4ed8');
-  grad.addColorStop(0.45, '#7c3aed');
-  grad.addColorStop(1, '#db2777');
+  grad.addColorStop(0, '#1e63d0');
+  grad.addColorStop(0.5, '#2f9be8');
+  grad.addColorStop(1, '#5cc8f2');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
-  // Diagonal candy stripes, low alpha.
-  ctx.save();
-  ctx.globalAlpha = 0.07;
-  ctx.fillStyle = '#ffffff';
-  for (let i = -H; i < W + H; i += 90) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0); ctx.lineTo(i + 34, 0); ctx.lineTo(i + 34 + H, H); ctx.lineTo(i + H, H);
-    ctx.closePath();
-    ctx.fill();
+  // Jigsaw pieces in a deeper blue, low alpha, around the edges.
+  for (const p of g.bgPuzzle || []) {
+    ctx.save();
+    ctx.globalAlpha = p.a;
+    drawPuzzlePiece(ctx, p.x, p.y, p.s, p.rot, '#0d47a1');
+    ctx.restore();
   }
-  ctx.restore();
-  // Polka dots.
-  ctx.save();
-  ctx.globalAlpha = 0.08;
-  ctx.fillStyle = '#ffffff';
-  for (let x = 30; x < W; x += 74) {
-    for (let y = 26; y < H; y += 74) {
-      ctx.beginPath();
-      ctx.arc(x + ((y / 74) % 2) * 37, y, 7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  ctx.restore();
   // Drifting translucent gems (seeded once per game).
   for (const f of g.bgFloaters) {
     const fy = ((f.y + t * f.speed) % (H + 120)) - 60;
@@ -245,7 +229,7 @@ export function drawBackground(ctx, g) {
     const cy = ((c.y + t * c.speed) % (H + 20)) - 10;
     const cx = c.x + Math.sin(t * 0.7 + c.phase) * 14;
     ctx.save();
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.35;
     ctx.fillStyle = c.color;
     ctx.beginPath();
     ctx.arc(cx, cy, c.r, 0, Math.PI * 2);
@@ -462,7 +446,7 @@ function drawHUD(ctx, g) {
   // HUD buttons are inactive while the pause menu is open (its own buttons
   // are the only clickable ones there).
   const hudActive = g.mode !== 'menu';
-  drawButton(ctx, g, 'sound', 1080, 14, 46, 46, snd, '#0ea5e9', '#0369a1', '#fff', 20, hudActive);
+  drawButton(ctx, g, 'sound', 1080, 14, 46, 46, snd, '#14b8a6', '#0f766e', '#fff', 20, hudActive);
   drawButton(ctx, g, 'menu', 1138, 14, 46, 46, '☰', '#8b5cf6', '#5b21b6', '#fff', 22, hudActive);
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
   ctx.font = `700 12px ${BODY_FONT}`;
@@ -562,7 +546,7 @@ function drawSide(ctx, g) {
   // MENU button overlaps this RESTART button and must win the click.
   const sideActive = g.mode === 'play';
   drawButton(ctx, g, 'restart', L.sideX + 24, y, 200, 44, '↻  RESTART', '#f43f5e', '#9f1239', '#fff', 22, sideActive);
-  drawButton(ctx, g, 'hint', L.sideX + 244, y, 308, 44, '💡  TIP: SAVE BIG PIECES', '#0ea5e9', '#0369a1', '#fff', 15, sideActive);
+  drawButton(ctx, g, 'hint', L.sideX + 244, y, 308, 44, '💡  TIP: SAVE BIG PIECES', '#14b8a6', '#0f766e', '#fff', 15, sideActive);
   y += 62;
   ctx.fillStyle = 'rgba(255,255,255,0.7)';
   ctx.font = `700 14px ${BODY_FONT}`;
@@ -593,6 +577,12 @@ function drawParticles(ctx, g) {
       ctx.stroke();
     } else if (p.kind === 'gemfly') {
       drawGemShape(ctx, colorById(p.color).shape, p.x, p.y, p.size, p.color, g.time, p.phase);
+    } else if (p.kind === 'confetti') {
+      // Celebration confetti: small colored rectangles tumbling down.
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
     } else {
       // spark
       ctx.fillStyle = p.color;
@@ -606,14 +596,29 @@ function drawParticles(ctx, g) {
     const f = Math.max(0, pop.life / pop.max);
     ctx.save();
     ctx.globalAlpha = Math.min(1, f * 1.6);
-    ctx.font = `900 ${pop.big ? 40 : 26}px ${TITLE_FONT}`;
+    ctx.font = `900 ${pop.big ? 34 : 26}px ${TITLE_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 7;
-    ctx.strokeStyle = 'rgba(15,23,42,0.9)';
+    ctx.strokeStyle = 'rgba(8,47,73,0.9)';
     ctx.strokeText(pop.text, pop.x, pop.y - (1 - f) * 30);
     ctx.fillStyle = pop.color;
     ctx.fillText(pop.text, pop.x, pop.y - (1 - f) * 30);
+    ctx.restore();
+  }
+  // "N lines blasted" toast: a green pill riding the bottom edge of the
+  // board for a moment after a clear.
+  if (g.clearToast && g.clearToast.life > 0) {
+    const ct = g.clearToast;
+    const f = Math.min(1, ct.life / (ct.max * 0.5));
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, f * 1.5);
+    pill(ctx, 194, 555, 300, 34, '#22c55e', '#15803d');
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 18px ${TITLE_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`✓  ${ct.n} line${ct.n > 1 ? 's' : ''} blasted`, 344, 573);
     ctx.restore();
   }
   if (g.banner && g.banner.life > 0) {
@@ -624,29 +629,69 @@ function drawParticles(ctx, g) {
     ctx.translate(b.x ?? 640, b.y ?? 300);
     ctx.scale(pop, pop);
     ctx.globalAlpha = Math.min(1, f * 1.5);
-    ctx.font = `900 64px ${TITLE_FONT}`;
+    ctx.font = `900 52px ${TITLE_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 12;
-    ctx.strokeStyle = 'rgba(15,23,42,0.95)';
+    ctx.strokeStyle = 'rgba(8,47,73,0.95)';
     ctx.strokeText(b.text, 0, 0);
     ctx.fillStyle = b.color;
     ctx.fillText(b.text, 0, 0);
     if (b.sub) {
-      ctx.font = `900 26px ${TITLE_FONT}`;
+      ctx.font = `900 22px ${TITLE_FONT}`;
       ctx.lineWidth = 8;
-      ctx.strokeText(b.sub, 0, 52);
+      ctx.strokeText(b.sub, 0, 46);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(b.sub, 0, 52);
+      ctx.fillText(b.sub, 0, 46);
     }
     ctx.restore();
   }
 }
 
-// ---- Chunky logo ----
+// ---- Chunky balloon logo (with a gold crown on the B) ----
+function drawCrown(ctx, x, y, s) {
+  // s = crown width; y = base of the crown. All code-drawn: a gold band
+  // with three points, ball tips and one red jewel.
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.1);
+  const w = s, h = s * 0.62;
+  const grad = ctx.createLinearGradient(0, -h, 0, 0);
+  grad.addColorStop(0, '#fde047');
+  grad.addColorStop(0.5, '#f59e0b');
+  grad.addColorStop(1, '#d97706');
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = '#92400e';
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, 0);
+  ctx.lineTo(-w / 2, -h * 0.55);
+  ctx.lineTo(-w * 0.22, -h * 0.18);
+  ctx.lineTo(0, -h);
+  ctx.lineTo(w * 0.22, -h * 0.18);
+  ctx.lineTo(w / 2, -h * 0.55);
+  ctx.lineTo(w / 2, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#fde047';
+  for (const [tx, ty] of [[-w / 2, -h * 0.62], [0, -h * 1.08], [w / 2, -h * 0.62]]) {
+    ctx.beginPath();
+    ctx.arc(tx, ty, s * 0.09, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#ef4444';
+  ctx.beginPath();
+  ctx.arc(0, -h * 0.32, s * 0.08, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawLogo(ctx, cx, y, size, t, bounce = true) {
   const letters = 'AMBLAST'.split('');
-  const colors = ['#f97316', '#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#ec4899'];
+  const colors = ['#f97316', '#38bdf8', '#ef4444', '#facc15', '#a855f7', '#ec4899', '#2dd4bf'];
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -662,16 +707,28 @@ function drawLogo(ctx, cx, y, size, t, bounce = true) {
     ctx.font = `900 ${size}px ${TITLE_FONT}`;
     ctx.lineWidth = size * 0.14;
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(15,23,42,0.9)';
+    ctx.strokeStyle = 'rgba(8,47,73,0.9)';
     ctx.strokeText(ch, 0, 0);
+    // Soft drop shadow under each balloon letter, then the glossy fill.
+    ctx.shadowColor = 'rgba(8,47,73,0.45)';
+    ctx.shadowBlur = size * 0.1;
+    ctx.shadowOffsetY = size * 0.05;
     ctx.fillStyle = colors[i % colors.length];
     ctx.fillText(ch, 0, 0);
-    // Gloss.
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.font = `900 ${size * 0.42}px ${TITLE_FONT}`;
-    ctx.fillText(ch, 0, -size * 0.16);
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    // Gloss: a small white shine spot at the top-left of the letter.
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.ellipse(-w * 0.16, -size * 0.26, w * 0.13, size * 0.06, -0.4, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   });
+  // Gold crown sitting on the B (3rd letter), bobbing with it.
+  const bBob = bounce ? Math.sin(t * 3 + 2 * 0.55) * size * 0.045 : 0;
+  const bx = cx - total / 2 + w * 2.5;
+  drawCrown(ctx, bx, y + bBob - size * 0.52, size * 0.44);
   ctx.restore();
 }
 
@@ -688,11 +745,11 @@ function drawTitle(ctx, g) {
   drawGemShape(ctx, 'star4', 330, 90, 20, 'blue', t, 6);
   drawGemShape(ctx, 'penta', 950, 80, 20, 'green', t, 7);
   drawLogo(ctx, 640, 168, 118, t);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `900 30px ${TITLE_FONT}`;
+  ctx.fillStyle = '#22d3ee';
+  ctx.font = `900 28px ${TITLE_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('★  GEM BLOCK PUZZLE  ★', 640, 252);
+  ctx.fillText('—  GEM BLOCK PUZZLE  —', 640, 252);
   ctx.fillStyle = '#fde68a';
   ctx.font = `700 19px ${BODY_FONT}`;
   ctx.fillText('Drag the blocks. Blast the lines. Collect every gem!', 640, 286);
@@ -704,13 +761,28 @@ function drawTitle(ctx, g) {
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 2;
   ctx.stroke();
+  // Teal location pin, drawn in code.
+  ctx.fillStyle = '#22d3ee';
+  ctx.beginPath();
+  ctx.arc(424, 338, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(417, 344);
+  ctx.lineTo(431, 344);
+  ctx.lineTo(424, 356);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(424, 338, 3.5, 0, Math.PI * 2);
+  ctx.fill();
   ctx.fillStyle = '#ffffff';
   ctx.font = `900 22px ${TITLE_FONT}`;
   ctx.textAlign = 'left';
-  ctx.fillText(`📍  Level ${g.maxUnlocked}`, 414, 344);
+  ctx.fillText(`Level ${g.maxUnlocked}`, 440, 344);
   ctx.fillStyle = '#fde68a';
   ctx.font = `700 15px ${BODY_FONT}`;
-  ctx.fillText(`${g.maxUnlocked - 1} of 30 levels cleared  •  ${g.starsTotal}★ earned`, 414, 370);
+  ctx.fillText(`${g.maxUnlocked - 1} of 30 levels cleared  •  ${g.starsTotal}★ earned`, 440, 370);
   rr(ctx, 414, 344 + 34, 452, 12, 6);
   ctx.fillStyle = 'rgba(255,255,255,0.2)';
   ctx.fill();
@@ -718,9 +790,9 @@ function drawTitle(ctx, g) {
   ctx.fillStyle = '#4ade80';
   ctx.fill();
 
-  drawButton(ctx, g, 'adventure', 440, 416, 400, 64, '🏆  ADVENTURE', '#f59e0b', '#92400e', '#fff', 26);
-  drawButton(ctx, g, 'classic', 440, 492, 400, 64, '∞  CLASSIC', '#10b981', '#065f46', '#fff', 26);
-  drawButton(ctx, g, 'howto', 440, 568, 400, 52, '❓  HOW TO PLAY', '#0ea5e9', '#0369a1', '#fff', 20);
+  drawButton(ctx, g, 'adventure', 440, 416, 400, 64, '🏆  ADVENTURE', '#f97316', '#c2410c', '#fff', 26, true, 18);
+  drawButton(ctx, g, 'classic', 440, 492, 400, 64, '∞  CLASSIC', '#10b981', '#047857', '#fff', 26, true, 18);
+  drawButton(ctx, g, 'howto', 440, 568, 400, 52, '❓  HOW TO PLAY', '#d946ef', '#a21caf', '#fff', 20, true, 18);
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
   ctx.font = `700 16px ${BODY_FONT}`;
   ctx.textAlign = 'center';
@@ -876,17 +948,20 @@ function drawStars(ctx, cx, y, n, size = 46) {
 function drawClear(ctx, g) {
   drawOverlayPanel(ctx, g, 340, 120, 600, 480);
   const info = g.clearInfo || { grade: 'S', stars: 3 };
-  ctx.fillStyle = '#4ade80';
-  ctx.font = `900 52px ${TITLE_FONT}`;
-  ctx.textAlign = 'center';
-  ctx.fillText('LEVEL CLEAR!', 640, 190);
-  drawStars(ctx, 640, 268, info.stars);
-  ctx.fillStyle = '#fde68a';
-  ctx.font = `900 22px ${TITLE_FONT}`;
-  ctx.fillText(`GRADE ${info.grade}`, 640, 322);
   ctx.fillStyle = '#ffffff';
-  ctx.font = `900 30px ${MONO_FONT}`;
-  ctx.fillText(`SCORE  ${g.score}`, 640, 366);
+  ctx.font = `900 48px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('LEVEL CLEAR!', 640, 182);
+  drawStars(ctx, 640, 258, info.stars, 62);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 24px ${TITLE_FONT}`;
+  ctx.fillText(`GRADE ${info.grade}`, 640, 322);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font = `900 16px ${TITLE_FONT}`;
+  ctx.fillText('SCORE', 640, 352);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 40px ${MONO_FONT}`;
+  ctx.fillText(String(g.score), 640, 390);
   const rows = [
     ['LINES BLASTED', String(g.linesCleared)],
     ['GEMS COLLECTED', String(Object.values(g.collected).reduce((a, b) => a + b, 0))],
@@ -894,7 +969,7 @@ function drawClear(ctx, g) {
     ['PIECES PLACED', String(g.piecesPlaced)],
   ];
   ctx.font = `700 17px ${BODY_FONT}`;
-  let y = 404;
+  let y = 424;
   for (const [k, v] of rows) {
     ctx.fillStyle = 'rgba(255,255,255,0.65)';
     ctx.textAlign = 'left';
@@ -902,7 +977,7 @@ function drawClear(ctx, g) {
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'right';
     ctx.fillText(v, 840, y);
-    y += 28;
+    y += 26;
   }
   const last = g.level && g.level.n >= 30;
   drawButton(ctx, g, last ? 'victory' : 'next', 490, 516, 300, 56, last ? '🏆  TROPHY!' : '▶  NEXT LEVEL', '#22c55e', '#14532d', '#fff', 22);
@@ -1033,7 +1108,8 @@ export function render(ctx, g) {
   ctx.restore();
 }
 
-// Seed the ambient background: floating gems, sparkles, confetti.
+// Seed the ambient background: floating gems, sparkles, confetti and
+// jigsaw pieces (code-drawn decor for the bright-blue sky theme).
 export function seedBackground(seed) {
   const rng = mulberry32(seed);
   const shapes = ['star4', 'penta', 'star6', 'bloom', 'diamond', 'hexa'];
@@ -1042,9 +1118,9 @@ export function seedBackground(seed) {
   for (let i = 0; i < 12; i++) {
     bgFloaters.push({
       x: range(rng, 40, W - 40), y: range(rng, 0, H),
-      r: range(rng, 14, 30), shape: shapes[Math.floor(rng() * shapes.length)],
+      r: range(rng, 16, 32), shape: shapes[Math.floor(rng() * shapes.length)],
       color: colors[Math.floor(rng() * colors.length)],
-      speed: range(rng, 4, 12), a: range(rng, 0.10, 0.22), phase: rng() * Math.PI * 2,
+      speed: range(rng, 4, 12), a: range(rng, 0.22, 0.45), phase: rng() * Math.PI * 2,
     });
   }
   const bgSparkles = [];
@@ -1052,8 +1128,49 @@ export function seedBackground(seed) {
     bgSparkles.push({ x: rng() * W, y: rng() * H, r: range(rng, 1, 2.6), speed: range(rng, 0.6, 2.2), phase: rng() * Math.PI * 2 });
   }
   const bgConfetti = [];
-  for (let i = 0; i < 26; i++) {
-    bgConfetti.push({ x: rng() * W, y: rng() * H, r: range(rng, 2, 4.5), speed: range(rng, 8, 22), phase: rng() * Math.PI * 2, color: COLORS[Math.floor(rng() * COLORS.length)].main });
+  for (let i = 0; i < 18; i++) {
+    bgConfetti.push({ x: rng() * W, y: rng() * H, r: range(rng, 2, 4), speed: range(rng, 8, 20), phase: rng() * Math.PI * 2, color: COLORS[Math.floor(rng() * COLORS.length)].main });
   }
-  return { bgFloaters, bgSparkles, bgConfetti };
+  // Jigsaw pieces scattered around the edges (low alpha, never over the
+  // board or panels): the puzzle motif of the bright-blue sky.
+  const bgPuzzle = [];
+  const spots = [
+    [70, 60, 92], [1200, 70, 104], [90, 660, 88], [1190, 640, 96],
+    [60, 330, 74], [1225, 330, 78], [250, 40, 64], [1020, 30, 68],
+    [210, 690, 70], [1060, 690, 72], [330, 700, 58], [940, 700, 58],
+  ];
+  for (const [x, y, s] of spots) {
+    bgPuzzle.push({ x, y, s, rot: range(rng, -0.7, 0.7), a: range(rng, 0.10, 0.17) });
+  }
+  return { bgFloaters, bgSparkles, bgConfetti, bgPuzzle };
+}
+
+// Jigsaw silhouette: a rounded square with a knob on the top edge and a
+// matching notch on the right edge. Drawn in code, filled with one flat
+// color — decor only, never an image.
+function drawPuzzlePiece(ctx, x, y, s, rot, fill) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  const r = s * 0.18;
+  const k = s * 0.22;
+  const h = s / 2;
+  ctx.beginPath();
+  ctx.moveTo(-h + r, -h);
+  ctx.lineTo(-k, -h);
+  ctx.arc(0, -h, k, Math.PI, 0); // knob bulging out of the top edge
+  ctx.lineTo(h - r, -h);
+  ctx.arcTo(h, -h, h, -h + r, r);
+  ctx.lineTo(h, -k);
+  ctx.arc(h, 0, k, -Math.PI / 2, Math.PI / 2, true); // notch cut into the right edge
+  ctx.lineTo(h, h - r);
+  ctx.arcTo(h, h, h - r, h, r);
+  ctx.lineTo(-h + r, h);
+  ctx.arcTo(-h, h, -h, h - r, r);
+  ctx.lineTo(-h, -h + r);
+  ctx.arcTo(-h, -h, -h + r, -h, r);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.restore();
 }

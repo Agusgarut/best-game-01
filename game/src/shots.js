@@ -17,6 +17,7 @@ function resetCommon(g) {
   g.particles = [];
   g.popups = [];
   g.banner = null;
+  g.clearToast = null;
   g.lineFlash = null;
   g.pendingClear = null;
   g.drag = null;
@@ -148,7 +149,20 @@ export function applyShot(g, name, seed) {
     g.particles.push({ kind: 'ring', x: 420, y: 270, r: 46, life: 0.35, max: 0.45, color: '#fde68a' });
     g.particles.push({ kind: 'gemfly', x: 300, y: 250, vx: 0, vy: 0, life: 0.4, max: 0.55, color: 'green', size: 17, phase: 0, tx: 656, ty: 140, r: 10 });
     g.particles.push({ kind: 'gemfly', x: 430, y: 290, vx: 0, vy: 0, life: 0.45, max: 0.55, color: 'red', size: 17, phase: 1, tx: 656, ty: 228, r: 10 });
-    g.popups.push({ x: 340, y: 120, text: '+1450  COMBO x5', color: '#fde68a', big: true, life: 0.9, max: 0.9 });
+    // Celebration confetti frozen mid-burst, and the "2 lines blasted" toast.
+    const confettiColors = ['#f97316', '#22c55e', '#eab308', '#ec4899', '#38bdf8', '#a855f7'];
+    for (let i = 0; i < 16; i++) {
+      const a = rng() * Math.PI * 2;
+      const d = 30 + rng() * 160;
+      g.particles.push({
+        kind: 'confetti', x: 360 + Math.cos(a) * d, y: 270 + Math.sin(a) * d * 0.7,
+        vx: 0, vy: 0, life: 1.0, max: 1.6,
+        color: confettiColors[i % confettiColors.length],
+        size: 7 + rng() * 6, rot: rng() * Math.PI, vr: 0, phase: rng() * Math.PI * 2,
+      });
+    }
+    g.clearToast = { n: 2, life: 1.4, max: 1.6 };
+    g.popups.push({ x: 340, y: 150, text: '+1450  COMBO x5', color: '#fde68a', big: true, life: 0.9, max: 0.9 });
     g.banner = { text: 'COMBO x5!', sub: '2 lines blasted', color: '#fb923c', life: 0.8, max: 1.0, x: 360, y: 330 };
     g.shake = 0;
     g.mode = 'play';
