@@ -1,14 +1,12 @@
-// ORBITAL — a gravity-slingshot arcade game.
-// Slingshot a probe around neon planets, collect every star, don't crash.
-// Vanilla JS, canvas 2D, no libraries, no network. Sounds are synthesized.
+// AMBLAST — a gem block puzzle.
+// Drag chunky blocks onto the 8x8 grid, blast full rows and columns,
+// collect every target gem. Vanilla JS, canvas 2D, no libraries, no network.
 
-import { W, H, LEVELS, POWERUPS, instantiateLevel } from './levels.js';
-import { mulberry32, range } from './rng.js';
-import { stepProbe, PROBE_R, STAR_R, POWERUP_R, updatePlanets, updateAsteroids, asteroidHit } from './physics.js';
-import { render } from './render.js';
-import { attachInput } from './input.js';
+import { GRID, COLORS, buildLevel, buildClassic, dealTray, emptyGrid, fitsPiece, anyFit, findLines, clearLines, LEVEL_NAMES } from './levels.js';
+import { mulberry32 } from './rng.js';
+import { render, seedBackground, traySlot, boardCellAt, L } from './render.js';
 import { sfx, setMuted, isMuted } from './audio.js';
-import { seedScenery, applyShot } from './shots.js';
+import { applyShot } from './shots.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -17,449 +15,503 @@ const params = new URLSearchParams(window.location.search);
 const shotName = params.get('shot');
 const seed = Number(params.get('seed') || '1') || 1;
 
-function loadBest() {
-  try {
-    return Number(window.localStorage.getItem('orbital-best') || '0') || 0;
-  } catch {
-    return 0;
-  }
+const TIPS = [
+  'Corners love L-pieces. Big squares love 3x3s.',
+  'Clear two lines at once for a huge bonus!',
+  'Save the 3x3 for the endgame — it fits almost nowhere.',
+  'Gems only count when their line blasts. Aim through them!',
+  'A combo builds when every drop blasts a line.',
+  'Stuck? Stone tiles never leave — plan around them.',
+];
+
+function loadNum(key, def) {
+  try { return Number(window.localStorage.getItem(key) || String(def)) || def; } catch { return def; }
+}
+function saveNum(key, v) {
+  try { window.localStorage.setItem(key, String(v)); } catch { /* no storage */ }
+}
+function loadStars() {
+  try { return JSON.parse(window.localStorage.getItem('amblast-stars') || '{}'); } catch { return {}; }
+}
+function saveStars(s) {
+  try { window.localStorage.setItem('amblast-stars', JSON.stringify(s)); } catch { /* no storage */ }
 }
 
-function saveBest(v) {
-  try {
-    window.localStorage.setItem('orbital-best', String(v));
-  } catch {
-    /* storage unavailable — best score just isn't kept */
-  }
-}
+const bg = seedBackground(7);
+let trayRng = mulberry32((Date.now() % 100000) + 11);
 
-function createGame() {
-  const g = {
-    mode: 'title',
-    time: 0,
-    score: 0,
-    best: loadBest(),
-    lives: 3,
-    combo: 0,
-    comboTimer: 0,
-    lastCollect: -99,
-    bestCombo: 0,
-    starsCollected: 0,
-    shotsUsed: 0,
-    levelStarScore: 0,
-    levelIndex: 0,
-    level: LEVELS[0],
-    planets: [],
-    asteroids: [],
-    powerupsLeft: [],
-    starsLeft: [],
-    probe: { x: 120, y: 620, vx: 0, vy: 0 },
-    aim: { x: 640, y: 300 },
-    aimAngle: -Math.PI / 2,
-    charging: false,
-    power: 0,
-    fuel: 100,
-    fuelMax: 100,
-    shield: false,
-    slowTimer: 0,
-    levelTime: 0,
-    trail: [],
-    particles: [],
-    rings: [],
-    popups: [],
-    shake: 0,
-    hint: '',
-    won: false,
-    clearInfo: null,
-    clearTimer: 0,
-    briefTimer: 0,
-    stats: null,
-    starfield: [],
-    starfieldNear: [],
-    nebulae: [],
-    galaxies: [],
-  };
-  seedScenery(g, seed);
-  return g;
-}
+const g = {
+  mode: 'title',
+  prevMode: 'title',
+  classic: false,
+  level: null,
+  grid: emptyGrid(),
+  tray: [],
+  score: 0,
+  best: loadNum('amblast-best', 0),
+  collected: {},
+  combo: 1,
+  comboTimer: 0,
+  bestCombo: 1,
+  linesCleared: 0,
+  piecesPlaced: 0,
+  drag: null,
+  selected: null,
+  particles: [],
+  popups: [],
+  banner: null,
+  lineFlash: null,
+  pendingClear: null,
+  shake: 0,
+  time: 0,
+  muted: false,
+  maxUnlocked: Math.min(30, Math.max(1, loadNum('amblast-unlocked', 1))),
+  stars: loadStars(),
+  starsTotal: 0,
+  clearInfo: null,
+  tip: TIPS[0],
+  tipIdx: 0,
+  hoverBtn: null,
+  pressBtn: null,
+  locked: false,
+  bgFloaters: bg.bgFloaters,
+  bgSparkles: bg.bgSparkles,
+  bgConfetti: bg.bgConfetti,
+  ui: { buttons: [], mapNodes: [] },
+};
+g.starsTotal = Object.values(g.stars).reduce((a, b) => a + b, 0);
 
-const g = createGame();
-
-function loadLevel(i) {
-  g.levelIndex = i;
-  g.level = LEVELS[i];
-  const live = instantiateLevel(g.level);
-  g.planets = live.planets;
-  g.asteroids = live.asteroids;
-  g.powerupsLeft = live.powerups;
-  g.starsLeft = g.level.stars.map((s, k) => ({
-    x: s.x, y: s.y, taken: false, phase: k * 1.3,
-  }));
-  g.probe = { x: g.level.start.x, y: g.level.start.y, vx: 0, vy: 0 };
-  g.aim = { x: g.level.start.x, y: g.level.start.y - 200 };
-  g.aimAngle = -Math.PI / 2;
-  g.fuelMax = g.level.fuel;
-  g.fuel = g.level.fuel;
-  g.levelTime = 0;
-  g.combo = 0;
+function resetRunStats() {
+  g.linesCleared = 0;
+  g.piecesPlaced = 0;
+  g.bestCombo = 1;
+  g.combo = 1;
   g.comboTimer = 0;
-  g.levelStarScore = 0;
-  g.trail = [];
-  g.particles = [];
-  g.rings = [];
-  g.popups = [];
-  g.shake = 0;
-  g.charging = false;
-  g.power = 0;
-  g.shield = false;
-  g.slowTimer = 0;
-  g.won = false;
-  g.clearInfo = null;
-  g.briefTimer = 3.4;
-  g.mode = 'brief';
-  g.hint = i === 0
-    ? 'MOVE MOUSE to aim · HOLD to charge · RELEASE to launch'
-    : `LEVEL ${i + 1} · ${g.level.name} — collect every star`;
 }
 
-function burst(x, y, color, n, speed) {
+function startLevel(n) {
+  const level = buildLevel(n);
+  g.classic = false;
+  g.level = level;
+  g.grid = level.grid;
+  g.collected = {};
+  for (const id of Object.keys(level.targets)) g.collected[id] = 0;
+  g.score = 0;
+  g.tray = dealTray(trayRng);
+  g.drag = null;
+  g.selected = null;
+  g.particles = [];
+  g.popups = [];
+  g.banner = null;
+  g.lineFlash = null;
+  g.pendingClear = null;
+  g.locked = false;
+  resetRunStats();
+  g.mode = 'play';
+  g.tip = TIPS[n % TIPS.length];
+}
+
+function startClassic() {
+  g.classic = true;
+  g.level = buildClassic();
+  g.grid = g.level.grid;
+  g.collected = {};
+  g.score = 0;
+  g.tray = dealTray(trayRng);
+  g.drag = null;
+  g.selected = null;
+  g.particles = [];
+  g.popups = [];
+  g.banner = null;
+  g.lineFlash = null;
+  g.pendingClear = null;
+  g.locked = false;
+  resetRunStats();
+  g.mode = 'play';
+  g.tip = 'No targets — just keep blasting!';
+}
+
+function addPopup(x, y, text, color, big = false) {
+  g.popups.push({ x, y, text, color, big, life: 1.1, max: 1.1 });
+}
+function burst(x, y, color, n = 10, speed = 260) {
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2;
-    const v = speed * (0.3 + Math.random() * 0.7);
+    const v = speed * (0.4 + Math.random() * 0.8);
     g.particles.push({
-      x, y,
-      vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-      life: 0.7 + Math.random() * 0.4, max: 1.1,
-      color, size: 2 + Math.random() * 3.5,
+      kind: 'shard', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 60,
+      life: 0.7, max: 0.7, color, size: 6 + Math.random() * 7,
+      rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 10,
+    });
+  }
+  for (let i = 0; i < 6; i++) {
+    g.particles.push({
+      kind: 'spark', x: x + (Math.random() - 0.5) * 40, y: y + (Math.random() - 0.5) * 40,
+      vx: (Math.random() - 0.5) * 60, vy: -40 - Math.random() * 60,
+      life: 0.8, max: 0.8, color: '#ffffff', size: 3 + Math.random() * 3,
     });
   }
 }
-
-function ring(x, y, color, max) {
-  g.rings.push({ x, y, r: 8, max, life: 0.55, maxLife: 0.55, color });
+function ring(x, y, color) {
+  g.particles.push({ kind: 'ring', x, y, r: 10, life: 0.45, max: 0.45, color });
 }
 
-function popup(x, y, text, color, big) {
-  g.popups.push({ x, y, text, color, big: !!big, life: 1.1, max: 1.1 });
+function levelComplete() {
+  if (g.classic || !g.level) return false;
+  return Object.keys(g.level.targets).every((id) => (g.collected[id] || 0) >= g.level.targets[id]);
 }
 
-function collectStar(s) {
-  s.taken = true;
-  g.starsCollected += 1;
-  g.combo = g.time - g.lastCollect < 4 ? g.combo + 1 : 1;
-  g.lastCollect = g.time;
-  g.comboTimer = 4;
-  if (g.combo > g.bestCombo) g.bestCombo = g.combo;
-  const pts = 100 * g.combo;
-  g.score += pts;
-  g.levelStarScore += pts;
-  g.fuel = Math.min(g.fuelMax, g.fuel + 12);
-  burst(s.x, s.y, '#fbbf24', 22, 190);
-  ring(s.x, s.y, '#fde68a', 70);
-  popup(s.x, s.y - 18, `+${pts}${g.combo > 1 ? `  COMBO x${g.combo}` : ''}`, '#fde68a', g.combo > 2);
-  sfx.collect(g.combo);
-  if (g.starsLeft.every((st) => st.taken)) {
-    const timeBonus = Math.max(0, Math.round((g.level.par - g.levelTime) * 10));
-    const levelBonus = 250 * (g.levelIndex + 1);
-    g.score += timeBonus + levelBonus;
-    const grade = g.levelTime < g.level.par * 0.6 ? 'S' : g.levelTime < g.level.par ? 'A' : 'B';
-    g.clearInfo = {
-      stars: g.starsLeft.length,
-      starScore: g.levelStarScore,
-      timeBonus,
-      levelBonus,
-      grade,
-      nextName: g.levelIndex + 1 < LEVELS.length ? LEVELS[g.levelIndex + 1].name : '—',
-    };
-    g.mode = 'clear';
-    g.clearTimer = 2.6;
-    sfx.clear();
+function finishLevel() {
+  const n = g.level.n;
+  const par = g.level.par;
+  const stars = g.score >= par * 1.2 ? 3 : g.score >= par * 0.7 ? 2 : 1;
+  g.clearInfo = { stars, grade: stars === 3 ? 'S' : stars === 2 ? 'A' : 'B' };
+  if ((g.stars[n] || 0) < stars) {
+    g.stars[n] = stars;
+    saveStars(g.stars);
+    g.starsTotal = Object.values(g.stars).reduce((a, b) => a + b, 0);
   }
-}
-
-function collectPowerup(p) {
-  p.taken = true;
-  g.score += 150;
-  const def = POWERUPS[p.kind];
-  burst(p.x, p.y, def.color, 26, 210);
-  ring(p.x, p.y, def.color, 90);
-  if (p.kind === 'shield') {
-    g.shield = true;
-    popup(p.x, p.y - 20, '+150  SHIELD ONLINE', def.color, true);
-    sfx.power();
-  } else if (p.kind === 'slow') {
-    g.slowTimer = 6;
-    popup(p.x, p.y - 20, '+150  SLOW-MO 6s', def.color, true);
-    sfx.power();
-  } else if (p.kind === 'life') {
-    g.lives = Math.min(5, g.lives + 1);
-    popup(p.x, p.y - 20, '+150  +1 LIFE', def.color, true);
-    sfx.power();
-  } else {
-    g.fuel = g.fuelMax;
-    popup(p.x, p.y - 20, '+150  FUEL FULL', def.color, true);
-    sfx.power();
+  if (n >= g.maxUnlocked && n < 30) {
+    g.maxUnlocked = n + 1;
+    saveNum('amblast-unlocked', g.maxUnlocked);
   }
-}
-
-// A shield absorbs one crash: the probe bounces off the body instead.
-function shieldBounce(cx, cy, r) {
-  const dx = g.probe.x - cx;
-  const dy = g.probe.y - cy;
-  const d = Math.hypot(dx, dy) || 1;
-  const nx = dx / d;
-  const ny = dy / d;
-  const dot = g.probe.vx * nx + g.probe.vy * ny;
-  g.probe.vx = (g.probe.vx - 2 * dot * nx) * 0.6;
-  g.probe.vy = (g.probe.vy - 2 * dot * ny) * 0.6;
-  g.probe.x = cx + nx * (r + PROBE_R + 3);
-  g.probe.y = cy + ny * (r + PROBE_R + 3);
-  g.shield = false;
-  g.shake = 10;
-  burst(g.probe.x, g.probe.y, '#22d3ee', 26, 220);
-  ring(g.probe.x, g.probe.y, '#22d3ee', 100);
-  popup(g.probe.x, g.probe.y - 26, 'SHIELD SAVED YOU', '#67e8f9', true);
-  sfx.shield();
-}
-
-function loseProbe(reason) {
-  burst(g.probe.x, g.probe.y, '#fb7185', 34, 260);
-  burst(g.probe.x, g.probe.y, '#fde68a', 16, 160);
-  ring(g.probe.x, g.probe.y, '#fb7185', 120);
-  g.shake = 14;
-  g.lives -= 1;
-  sfx.crash();
-  if (g.lives <= 0) {
-    endGame(false);
-    return;
-  }
-  popup(g.probe.x, g.probe.y - 24, reason, '#fda4af', true);
-  g.probe = { x: g.level.start.x, y: g.level.start.y, vx: 0, vy: 0 };
-  g.aim = { x: g.level.start.x, y: g.level.start.y - 200 };
-  g.aimAngle = -Math.PI / 2;
-  g.fuel = g.fuelMax;
-  g.trail = [];
-  g.mode = 'aim';
-  g.hint = 'Probe lost — fly again, pilot';
-}
-
-function endGame(won) {
-  g.won = won;
-  g.mode = 'over';
-  g.stats = {
-    levels: won ? LEVELS.length : g.levelIndex + 1,
-    stars: g.starsCollected,
-    bestCombo: g.bestCombo,
-    shots: g.shotsUsed,
-    time: Math.round(g.time),
-  };
   if (g.score > g.best) {
     g.best = g.score;
-    saveBest(g.best);
+    saveNum('amblast-best', g.best);
   }
-  if (won) sfx.clear();
-  else sfx.over();
+  g.mode = 'clear';
+  sfx.win();
 }
 
-function launch() {
-  if (g.mode !== 'aim') return;
-  const dx = g.aim.x - g.probe.x;
-  const dy = g.aim.y - g.probe.y;
-  const d = Math.hypot(dx, dy);
-  if (d < 4) return;
-  const cost = 12 + 18 * g.power;
-  if (g.fuel < cost) {
-    g.hint = 'FUEL LOW — wait for it to recharge';
-    return;
+function failRun() {
+  if (g.classic) {
+    if (g.score > g.best) {
+      g.best = g.score;
+      saveNum('amblast-best', g.best);
+    }
+    g.mode = 'classicOver';
+  } else {
+    g.mode = 'soClose';
   }
-  g.fuel -= cost;
-  g.shotsUsed += 1;
-  const speed = 80 + 460 * g.power;
-  g.probe.vx = (dx / d) * speed;
-  g.probe.vy = (dy / d) * speed;
-  g.mode = 'fly';
-  g.hint = '';
-  burst(g.probe.x, g.probe.y, '#67e8f9', 10, 120);
-  sfx.launch();
+  sfx.lose();
 }
 
-function dismissBrief() {
-  if (g.mode !== 'brief') return;
-  g.briefTimer = 0;
-  g.mode = 'aim';
-  sfx.click();
+function checkStuck() {
+  const usable = g.tray.filter((p) => !p.used);
+  if (usable.length === 0) return; // dealt fresh below
+  const stuck = usable.every((p) => !anyFit(g.grid, p));
+  if (stuck) failRun();
 }
 
-function startGame() {
-  g.score = 0;
-  g.lives = 3;
-  g.best = loadBest();
-  g.bestCombo = 0;
-  g.starsCollected = 0;
-  g.shotsUsed = 0;
-  g.stats = null;
-  loadLevel(0);
-  sfx.click();
+function dealIfNeeded() {
+  if (g.tray.every((p) => p.used)) {
+    g.tray = dealTray(trayRng);
+  }
+  checkStuck();
 }
 
-function skipClear() {
-  g.clearTimer = 0;
-  advanceLevel();
+function placePiece(piece, r0, c0) {
+  for (const [dr, dc] of piece.shape.cells) {
+    g.grid[r0 + dr][c0 + dc] = { kind: 'block', color: piece.color };
+  }
+  piece.used = true;
+  g.piecesPlaced++;
+  g.score += piece.shape.cells.length * 10;
+  sfx.drop();
+  for (const [dr, dc] of piece.shape.cells) {
+    const x = L.boardX + (c0 + dc) * L.pitch + L.cell / 2;
+    const y = L.boardY + (r0 + dr) * L.pitch + L.cell / 2;
+    burst(x, y, COLORS.find((c) => c.id === piece.color).main, 3, 120);
+  }
+  const lines = findLines(g.grid);
+  const lineCount = lines.rows.length + lines.cols.length;
+  if (lineCount > 0) {
+    g.consec = (g.consec || 0) + 1;
+    g.combo = Math.max(1, g.consec);
+    g.comboTimer = 3;
+    g.bestCombo = Math.max(g.bestCombo, g.combo);
+    g.locked = true;
+    g.lineFlash = { rows: lines.rows, cols: lines.cols, life: 0.4, max: 0.4 };
+    g.pendingClear = lines;
+    sfx.clear(g.combo);
+    g.shake = 5 + lineCount * 2;
+    // Rings at the center of each cleared line.
+    for (const r of lines.rows) ring(L.boardX + 4 * L.pitch, L.boardY + r * L.pitch + L.cell / 2, '#ffffff');
+    for (const c of lines.cols) ring(L.boardX + c * L.pitch + L.cell / 2, L.boardY + 4 * L.pitch, '#ffffff');
+  } else {
+    g.consec = 0;
+    g.combo = 1;
+    dealIfNeeded();
+  }
 }
 
-function advanceLevel() {
-  if (g.levelIndex + 1 >= LEVELS.length) {
-    endGame(true);
-    return;
+function executeClear() {
+  const lines = g.pendingClear;
+  g.pendingClear = null;
+  g.lineFlash = null;
+  g.locked = false;
+  const lineCount = lines.rows.length + lines.cols.length;
+  // Collect gems before clearing (clearLines returns them).
+  const gems = clearLines(g.grid, lines);
+  g.linesCleared += lineCount;
+  let pts = lineCount * 100 * g.combo + gems.length * 50;
+  g.score += pts;
+  // Gems fly to the side-panel target list.
+  const targetIds = g.classic ? [] : Object.keys(g.level.targets);
+  gems.forEach((color, i) => {
+    if (!g.classic) g.collected[color] = (g.collected[color] || 0) + 1;
+    const idx = targetIds.indexOf(color);
+    const ty = L.sideY + 40 + Math.max(0, idx) * 44;
+    const cell = findGemCell(color);
+    g.particles.push({
+      kind: 'gemfly', x: cell ? cell.x : 360, y: cell ? cell.y : 300,
+      vx: 0, vy: 0, life: 0.55, max: 0.55, color, size: 16, phase: i,
+      tx: L.sideX + 48, ty,
+    });
+  });
+  const cx = L.boardX + 4 * L.pitch;
+  addPopup(cx, L.boardY - 8, `+${pts}`, '#fde68a', true);
+  if (g.combo >= 2) {
+    g.banner = { text: `COMBO x${g.combo}!`, sub: `${lineCount} line${lineCount > 1 ? 's' : ''} blasted`, color: '#fb923c', life: 1.0, max: 1.0 };
+    sfx.combo(g.combo);
   }
-  loadLevel(g.levelIndex + 1);
+  if (g.combo >= 2) {
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      g.particles.push({ kind: 'spark', x: cx + Math.cos(a) * 60, y: 300 + Math.sin(a) * 40, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120 - 40, life: 0.6, max: 0.6, color: '#fde68a', size: 4 });
+    }
+  }
+  if (!g.classic && levelComplete()) {
+    setTimeout(() => { if (g.mode === 'play') finishLevel(); }, 650);
+  } else {
+    dealIfNeeded();
+  }
 }
 
-function update(dt) {
-  g.time += dt;
-  if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 26);
-  if (g.slowTimer > 0) g.slowTimer = Math.max(0, g.slowTimer - dt);
-
-  // Particles, trail, rings, popups always age.
-  for (const p of g.particles) {
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vx *= 0.985;
-    p.vy *= 0.985;
-    p.life -= dt;
-  }
-  g.particles = g.particles.filter((p) => p.life > 0);
-  for (const t of g.trail) t.life -= dt;
-  g.trail = g.trail.filter((t) => t.life > 0);
-  for (const r of g.rings) {
-    r.life -= dt;
-    r.r += (r.max - r.r) * dt * 9;
-  }
-  g.rings = g.rings.filter((r) => r.life > 0);
-  for (const pp of g.popups) pp.life -= dt;
-  g.popups = g.popups.filter((pp) => pp.life > 0);
-  if (g.comboTimer > 0) {
-    g.comboTimer -= dt;
-    if (g.comboTimer <= 0) g.combo = 0;
-  }
-
-  // The world keeps moving on every screen except title.
-  if (g.mode !== 'title') {
-    updatePlanets(g.planets, g.time);
-    updateAsteroids(g.asteroids, dt, W, H);
-  }
-
-  if (g.mode === 'brief') {
-    g.briefTimer -= dt;
-    if (g.briefTimer <= 0) g.mode = 'aim';
-    return;
-  }
-
-  if (g.mode === 'aim') {
-    g.levelTime += dt;
-    g.fuel = Math.min(g.fuelMax, g.fuel + 6 * dt);
-    if (g.charging) g.power = Math.min(1, g.power + dt * 1.4);
-    return;
-  }
-
-  if (g.mode === 'fly') {
-    g.levelTime += dt;
-    // SLOW-MO stretches physics time; the level clock keeps real time.
-    const fdt = dt * (g.slowTimer > 0 ? 0.45 : 1);
-    // 4 substeps keep fast slingshots stable near planets.
-    const sub = 4;
-    const sdt = fdt / sub;
-    for (let i = 0; i < sub; i++) {
-      g.probe = stepProbe(g.planets, g.probe, sdt);
-      // Star collection.
-      for (const s of g.starsLeft) {
-        if (!s.taken && Math.hypot(g.probe.x - s.x, g.probe.y - s.y) < STAR_R) {
-          collectStar(s);
-          if (g.mode !== 'fly') return;
-        }
-      }
-      // Power-up collection.
-      for (const p of g.powerupsLeft) {
-        if (!p.taken && Math.hypot(g.probe.x - p.x, g.probe.y - p.y) < POWERUP_R) {
-          collectPowerup(p);
-        }
-      }
-      // Planet impact.
-      for (const p of g.planets) {
-        if (Math.hypot(g.probe.x - p.x, g.probe.y - p.y) < p.r + PROBE_R - 2) {
-          if (g.shield) {
-            shieldBounce(p.x, p.y, p.r);
-          } else {
-            loseProbe('CRASHED!');
-          }
-          return;
-        }
-      }
-      // Asteroid impact.
-      const a = asteroidHit(g.asteroids, g.probe.x, g.probe.y);
-      if (a) {
-        if (g.shield) {
-          shieldBounce(a.x, a.y, a.r);
-        } else {
-          loseProbe('HIT AN ASTEROID!');
-        }
-        return;
-      }
-      // Drifted off-screen.
-      if (g.probe.x < -90 || g.probe.x > W + 90 || g.probe.y < -90 || g.probe.y > H + 90) {
-        loseProbe('LOST IN DEEP SPACE');
-        return;
+function findGemCell(color) {
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const cell = g.grid[r][c];
+      if (cell && cell.kind === 'gem' && cell.color === color) {
+        return { x: L.boardX + c * L.pitch + L.cell / 2, y: L.boardY + r * L.pitch + L.cell / 2 };
       }
     }
-    // Thruster trail + exhaust sparks.
-    g.trail.push({
-      x: g.probe.x, y: g.probe.y,
-      life: 0.45, max: 0.45,
-      color: '#67e8f9', size: 4,
-    });
-    g.particles.push({
-      x: g.probe.x - g.probe.vx * 0.02 + (Math.random() - 0.5) * 8,
-      y: g.probe.y - g.probe.vy * 0.02 + (Math.random() - 0.5) * 8,
-      vx: -g.probe.vx * 0.08, vy: -g.probe.vy * 0.08,
-      life: 0.35, max: 0.35,
-      color: Math.random() < 0.5 ? '#67e8f9' : '#fbbf24',
-      size: 2 + Math.random() * 2,
-    });
-    return;
   }
+  return null;
+}
 
-  if (g.mode === 'clear') {
-    g.clearTimer -= dt;
-    if (g.clearTimer <= 0) advanceLevel();
+// ---- Input ----
+function toGame(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (1280 / rect.width),
+    y: (e.clientY - rect.top) * (720 / rect.height),
+  };
+}
+function buttonAt(x, y) {
+  for (const b of g.ui.buttons) {
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.id;
+  }
+  return null;
+}
+function mapNodeAt(x, y) {
+  for (const n of g.ui.mapNodes) {
+    if (Math.hypot(x - n.x, y - n.y) <= n.r) return n;
+  }
+  return null;
+}
+function slotAt(x, y) {
+  for (let i = 0; i < 3; i++) {
+    const s = traySlot(i);
+    if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return i;
+  }
+  return -1;
+}
+
+function handleButton(id) {
+  sfx.click();
+  switch (id) {
+    case 'adventure': g.mode = 'adventure'; break;
+    case 'classic': startClassic(); break;
+    case 'howto': g.prevMode = g.mode; g.mode = 'howto'; break;
+    case 'close-howto': g.mode = g.prevMode || 'title'; break;
+    case 'back': g.mode = 'title'; break;
+    case 'play-level': startLevel(g.maxUnlocked); break;
+    case 'sound':
+      g.muted = !g.muted;
+      setMuted(g.muted);
+      break;
+    case 'menu': g.prevMode = g.mode; g.mode = 'menu'; break;
+    case 'menu2': case 'menu3': case 'menu4': case 'quit': g.mode = 'title'; break;
+    case 'resume': g.mode = g.prevMode === 'menu' ? 'play' : (g.prevMode || 'play'); break;
+    case 'restart': case 'restart2':
+      if (g.classic) startClassic(); else if (g.level) startLevel(g.level.n);
+      break;
+    case 'hint':
+      g.tipIdx = (g.tipIdx + 1) % TIPS.length;
+      g.tip = TIPS[g.tipIdx];
+      break;
+    case 'next':
+      if (g.level && g.level.n < 30) startLevel(g.level.n + 1);
+      break;
+    case 'victory': g.mode = 'victory'; break;
+    case 'retry': if (g.level) startLevel(g.level.n); break;
+    case 'again': g.score = 0; startLevel(1); break;
+    case 'again-classic': startClassic(); break;
+    default: break;
   }
 }
 
-const actions = {
-  start: startGame,
-  launch,
-  restart: startGame,
-  toggleMute: () => setMuted(!isMuted()),
-  skipClear,
-  dismissBrief,
-};
+let downPos = null;
+let downBtn = null;
 
-attachInput(canvas, g, actions);
+canvas.addEventListener('pointerdown', (e) => {
+  const p = toGame(e);
+  downPos = p;
+  const btn = buttonAt(p.x, p.y);
+  if (btn) { downBtn = btn; g.pressBtn = btn; return; }
+  if (g.mode === 'adventure') {
+    const node = mapNodeAt(p.x, p.y);
+    if (node && !node.locked) { sfx.click(); startLevel(node.n); }
+    return;
+  }
+  if (g.mode !== 'play' || g.locked) return;
+  const slot = slotAt(p.x, p.y);
+  if (slot >= 0) {
+    const piece = g.tray[slot];
+    if (piece && !piece.used) {
+      g.drag = { piece, x: p.x, y: p.y, hover: null, fits: false, moved: false, slot };
+      sfx.pick();
+    }
+    return;
+  }
+  // Click-select fallback: a selected piece drops on the clicked board cell.
+  if (g.selected) {
+    const cell = boardCellAt(p.x, p.y);
+    if (cell && fitsPiece(g.grid, g.selected, cell.r, cell.c)) {
+      placePiece(g.selected, cell.r, cell.c);
+      g.selected = null;
+    } else {
+      g.selected = null;
+    }
+  }
+});
 
-// --- Shot mode: one deterministic frame, no loop, no audio. ---
-if (shotName && applyShot(g, shotName, seed)) {
+canvas.addEventListener('pointermove', (e) => {
+  const p = toGame(e);
+  g.hoverBtn = buttonAt(p.x, p.y);
+  if (!g.drag) return;
+  g.drag.x = p.x;
+  g.drag.y = p.y;
+  if (Math.hypot(p.x - downPos.x, p.y - downPos.y) > 6) g.drag.moved = true;
+  const piece = g.drag.piece;
+  const rows = Math.max(...piece.shape.cells.map(([r]) => r)) + 1;
+  const cols = Math.max(...piece.shape.cells.map(([, c]) => c)) + 1;
+  const topX = p.x - (cols * L.pitch) / 2;
+  const topY = p.y - (rows * L.pitch) / 2;
+  const c = Math.floor((topX - L.boardX) / L.pitch);
+  const r = Math.floor((topY - L.boardY) / L.pitch);
+  if (r < 0 || r >= GRID || c < 0 || c >= GRID) {
+    g.drag.hover = null;
+    g.drag.fits = false;
+    return;
+  }
+  g.drag.hover = { r, c };
+  g.drag.fits = fitsPiece(g.grid, piece, r, c);
+});
+
+canvas.addEventListener('pointerup', (e) => {
+  const p = toGame(e);
+  if (downBtn) {
+    if (buttonAt(p.x, p.y) === downBtn) handleButton(downBtn);
+    downBtn = null;
+    g.pressBtn = null;
+    return;
+  }
+  if (g.drag) {
+    const d = g.drag;
+    g.drag = null;
+    if (d.hover && d.fits) {
+      placePiece(d.piece, d.hover.r, d.hover.c);
+    } else if (!d.moved) {
+      // A tap selects the piece (click-to-place mode).
+      g.selected = d.piece;
+      sfx.click();
+    } else {
+      sfx.deny();
+    }
+  }
+  downPos = null;
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'm' || e.key === 'M') {
+    g.muted = !g.muted;
+    setMuted(g.muted);
+  } else if ((e.key === 'r' || e.key === 'R') && g.mode === 'play') {
+    if (g.classic) startClassic(); else if (g.level) startLevel(g.level.n);
+  } else if (e.key === 'Escape' && g.mode === 'play') {
+    g.prevMode = 'play';
+    g.mode = 'menu';
+  }
+});
+
+// ---- Main loop ----
+let last = 0;
+function frame(ts) {
+  const dt = Math.min(0.05, (ts - last) / 1000 || 0.016);
+  last = ts;
+  g.time += dt;
+  if (g.comboTimer > 0) {
+    g.comboTimer -= dt;
+    if (g.comboTimer <= 0) { g.combo = 1; g.consec = 0; }
+  }
+  if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 26);
+  if (g.lineFlash) {
+    g.lineFlash.life -= dt;
+    if (g.lineFlash.life <= 0) executeClear();
+  }
+  for (const p of g.particles) {
+    p.life -= dt;
+    if (p.kind === 'gemfly') {
+      // Fly toward the target counter.
+      const k = 1 - Math.pow(0.0018, dt);
+      p.x += (p.tx - p.x) * k;
+      p.y += (p.ty - p.y) * k;
+      p.r = (p.r || 10) + dt * 260;
+    } else if (p.kind === 'ring') {
+      p.r += dt * 320;
+    } else {
+      p.x += (p.vx || 0) * dt;
+      p.y += (p.vy || 0) * dt;
+      if (p.vy !== undefined) p.vy += 420 * dt;
+      if (p.rot !== undefined) p.rot += (p.vr || 0) * dt;
+    }
+  }
+  g.particles = g.particles.filter((p) => p.life > 0);
+  for (const pop of g.popups) pop.life -= dt;
+  g.popups = g.popups.filter((p) => p.life > 0);
+  if (g.banner) {
+    g.banner.life -= dt;
+    if (g.banner.life <= 0) g.banner = null;
+  }
   render(ctx, g);
-  document.title = 'shot-ready';
-} else {
-  let last = performance.now();
-  const frame = (now) => {
-    const dt = Math.min(1 / 30, (now - last) / 1000);
-    last = now;
-    update(dt);
-    render(ctx, g);
-    requestAnimationFrame(frame);
-  };
   requestAnimationFrame(frame);
 }
 
-// Expose a little state for debugging in the console.
-window.ORBITAL = { game: g };
+// ---- Boot ----
+if (shotName) {
+  applyShot(g, shotName, seed);
+  render(ctx, g);
+  document.title = 'shot-ready';
+} else {
+  requestAnimationFrame(frame);
+}
+
+window.AMBLAST = {
+  game: g,
+  startLevel,
+  startClassic,
+  levels: { buildLevel, buildClassic },
+  LEVEL_NAMES,
+};

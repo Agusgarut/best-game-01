@@ -1,16 +1,27 @@
-// ORBITAL rendering: everything drawn on one 2D canvas, no images.
+// AMBLAST rendering: everything drawn on one 2D canvas, no images.
 // The judge sees screenshots, so this file carries the game's look:
-// layered deep space, glowing textured planets, rings and black holes,
-// drifting asteroids, power-up orbs, shockwave rings, a dense HUD.
+// a busy candy sky, juicy 3D tiles, sparkling gems, a dense colorful HUD,
+// particles everywhere — but the board and the targets stay readable.
 
-import { W, H, POWERUPS } from './levels.js';
-import { predictPath, firstImpact, PROBE_R } from './physics.js';
-import { mulberry32 } from './rng.js';
+import { COLORS, colorById, GRID } from './levels.js';
+import { mulberry32, range } from './rng.js';
 
-const TITLE_FONT = '"Segoe UI", system-ui, sans-serif';
+export const W = 1280;
+export const H = 720;
+
+// Layout (logical 1280x720 space).
+export const L = {
+  boardX: 112, boardY: 96, cell: 54, pitch: 58,
+  panelX: 96, panelY: 80, panelW: 496, panelH: 496,
+  sideX: 608, sideY: 80, sideW: 576, sideH: 496,
+  trayX: 96, trayY: 596, trayW: 1088, trayH: 108,
+};
+
+const TITLE_FONT = '"Arial Black", "Segoe UI", Arial, sans-serif';
+const BODY_FONT = '"Segoe UI", system-ui, sans-serif';
 const MONO_FONT = '"Courier New", ui-monospace, monospace';
 
-function rr(ctx, x, y, w, h, r) {
+export function rr(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -29,892 +40,1001 @@ function wrapText(ctx, text, maxW) {
     if (ctx.measureText(test).width > maxW && cur) {
       lines.push(cur);
       cur = w;
-    } else {
-      cur = test;
-    }
+    } else cur = test;
   }
   if (cur) lines.push(cur);
   return lines;
 }
 
-function drawBackground(ctx, g, t) {
-  const grad = ctx.createLinearGradient(0, 0, W, H);
-  grad.addColorStop(0, '#03031a');
-  grad.addColorStop(0.5, '#0a0a30');
-  grad.addColorStop(1, '#160a33');
+// ---- Jewel shapes (one per gem color) ----
+export function drawGemShape(ctx, shape, x, y, r, color, t = 0, phase = 0) {
+  const c = colorById(color);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.sin(t * 1.4 + phase) * 0.08);
+  const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.35, r * 0.1, 0, 0, r * 1.05);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(0.35, c.light);
+  grad.addColorStop(1, c.main);
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = c.dark;
+  ctx.lineWidth = Math.max(1.5, r * 0.09);
+  ctx.beginPath();
+  const star = (points, outer, inner, rot = -Math.PI / 2) => {
+    for (let i = 0; i < points * 2; i++) {
+      const rad = i % 2 === 0 ? outer : inner;
+      const a = rot + (i * Math.PI) / points;
+      const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  };
+  const poly = (n, rad, rot = -Math.PI / 2) => {
+    for (let i = 0; i < n; i++) {
+      const a = rot + (i * Math.PI * 2) / n;
+      const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  };
+  if (shape === 'star4') star(4, r, r * 0.42);
+  else if (shape === 'star6') star(6, r, r * 0.55);
+  else if (shape === 'bloom') star(8, r, r * 0.62);
+  else if (shape === 'penta') poly(5, r);
+  else if (shape === 'diamond') poly(4, r, 0);
+  else poly(6, r); // hexa
+  ctx.fill();
+  ctx.stroke();
+  // Facet + sparkle.
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath();
+  ctx.arc(-r * 0.28, -r * 0.32, r * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+  const tw = 0.6 + 0.4 * Math.sin(t * 3 + phase * 2);
+  ctx.strokeStyle = `rgba(255,255,255,${0.75 * tw})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(r * 0.55, -r * 0.15); ctx.lineTo(r * 0.85, -r * 0.15);
+  ctx.moveTo(r * 0.7, -r * 0.3); ctx.lineTo(r * 0.7, 0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Juicy 3D block tile.
+function drawTile(ctx, x, y, s, colorId, t = 0) {
+  const c = colorById(colorId);
+  const g = ctx.createLinearGradient(x, y, x, y + s);
+  g.addColorStop(0, c.light);
+  g.addColorStop(0.45, c.main);
+  g.addColorStop(1, c.dark);
+  rr(ctx, x + 1.5, y + 1.5, s - 3, s - 3, 9);
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Top highlight + bottom shade = chunky 3D.
+  rr(ctx, x + 5, y + 4, s - 10, s * 0.22, 6);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fill();
+  rr(ctx, x + 5, y + s - 10, s - 10, 6, 4);
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fill();
+  // Tiny sparkle.
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.beginPath();
+  ctx.arc(x + s * 0.28, y + s * 0.3, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawStone(ctx, x, y, s) {
+  rr(ctx, x + 1.5, y + 1.5, s - 3, s - 3, 9);
+  const g = ctx.createLinearGradient(x, y, x, y + s);
+  g.addColorStop(0, '#64748b');
+  g.addColorStop(1, '#334155');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(15,23,42,0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + s * 0.25, y + s * 0.3); ctx.lineTo(x + s * 0.5, y + s * 0.55); ctx.lineTo(x + s * 0.35, y + s * 0.8);
+  ctx.moveTo(x + s * 0.6, y + s * 0.2); ctx.lineTo(x + s * 0.75, y + s * 0.45);
+  ctx.stroke();
+}
+
+// ---- Buttons: drawn and registered for hit-testing ----
+function drawButton(ctx, g, id, x, y, w, h, label, fill, dark, textColor = '#fff', font = 22, active = true) {
+  const hov = g.hoverBtn === id;
+  const press = g.pressBtn === id;
+  const dy = press ? 2 : 0;
+  rr(ctx, x, y + 4 + dy, w, h, 14);
+  ctx.fillStyle = dark;
+  ctx.fill();
+  rr(ctx, x, y + dy, w, h, 14);
+  const grad = ctx.createLinearGradient(x, y, x, y + h);
+  grad.addColorStop(0, fill);
+  grad.addColorStop(1, dark);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  if (hov) {
+    rr(ctx, x - 2, y - 2 + dy, w + 4, h + 4, 16);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+  ctx.fillStyle = textColor;
+  ctx.font = `900 ${font}px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1 + dy);
+  // Only clickable buttons register a hit area. Buttons drawn behind an
+  // overlay (active=false) stay visible but never shadow the overlay's own
+  // buttons — the pause menu's MAIN MENU sits on top of the side panel's
+  // RESTART button and must win the click.
+  if (active) g.ui.buttons.push({ id, x, y, w, h });
+}
+
+function pill(ctx, x, y, w, h, fill, stroke = 'rgba(255,255,255,0.35)') {
+  rr(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+// ---- Busy candy background ----
+export function drawBackground(ctx, g) {
+  const t = g.time;
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1d4ed8');
+  grad.addColorStop(0.45, '#7c3aed');
+  grad.addColorStop(1, '#db2777');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
-
-  // Distant galaxies: faint tilted spirals.
-  for (const gx of g.galaxies) {
-    ctx.save();
-    ctx.translate(gx.x, gx.y);
-    ctx.rotate(gx.rot);
-    ctx.globalAlpha = 0.5;
-    ctx.fillStyle = gx.color;
+  // Diagonal candy stripes, low alpha.
+  ctx.save();
+  ctx.globalAlpha = 0.07;
+  ctx.fillStyle = '#ffffff';
+  for (let i = -H; i < W + H; i += 90) {
     ctx.beginPath();
-    ctx.ellipse(0, 0, gx.r, gx.r * 0.42, 0, 0, Math.PI * 2);
+    ctx.moveTo(i, 0); ctx.lineTo(i + 34, 0); ctx.lineTo(i + 34 + H, H); ctx.lineTo(i + H, H);
+    ctx.closePath();
     ctx.fill();
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = '#ffffff';
+  }
+  ctx.restore();
+  // Polka dots.
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = '#ffffff';
+  for (let x = 30; x < W; x += 74) {
+    for (let y = 26; y < H; y += 74) {
+      ctx.beginPath();
+      ctx.arc(x + ((y / 74) % 2) * 37, y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+  // Drifting translucent gems (seeded once per game).
+  for (const f of g.bgFloaters) {
+    const fy = ((f.y + t * f.speed) % (H + 120)) - 60;
+    ctx.save();
+    ctx.globalAlpha = f.a;
+    drawGemShape(ctx, f.shape, f.x, fy, f.r, f.color, t, f.phase);
+    ctx.restore();
+  }
+  // Twinkling sparkles.
+  for (const s of g.bgSparkles) {
+    const a = 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(t * s.speed + s.phase));
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.arc(0, 0, 1.6, 0, Math.PI * 2);
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
-  ctx.globalAlpha = 1;
-
-  // Soft nebulae, layered.
-  for (const n of g.nebulae) {
-    const ng = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
-    ng.addColorStop(0, n.color);
-    ng.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = ng;
-    ctx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
-  }
-
-  // Far starfield.
-  for (const s of g.starfield) {
-    const tw = 0.45 + 0.55 * Math.abs(Math.sin(t * s.speed + s.phase));
-    ctx.globalAlpha = tw * s.a;
-    ctx.fillStyle = '#ffffff';
+  // Confetti dots drifting down.
+  for (const c of g.bgConfetti) {
+    const cy = ((c.y + t * c.speed) % (H + 20)) - 10;
+    const cx = c.x + Math.sin(t * 0.7 + c.phase) * 14;
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = c.color;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, c.r, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
   }
-  // Near stars, brighter, with cross sparkles on the biggest.
-  for (const s of g.starfieldNear) {
-    const tw = 0.5 + 0.5 * Math.abs(Math.sin(t * s.speed + s.phase));
-    ctx.globalAlpha = tw * s.a;
-    ctx.fillStyle = '#dbeafe';
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-    ctx.fill();
-    if (s.r > 2.3) {
-      ctx.strokeStyle = 'rgba(219, 234, 254, 0.7)';
+}
+
+// ---- Board ----
+function cellXY(r, c) {
+  return { x: L.boardX + c * L.pitch, y: L.boardY + r * L.pitch };
+}
+export function boardCellAt(px, py) {
+  const c = Math.floor((px - L.boardX) / L.pitch);
+  const r = Math.floor((py - L.boardY) / L.pitch);
+  if (r < 0 || r >= GRID || c < 0 || c >= GRID) return null;
+  return { r, c };
+}
+
+function drawBoard(ctx, g) {
+  const t = g.time;
+  // Panel with a deep backdrop so the busy sky never hurts readability.
+  rr(ctx, L.panelX, L.panelY, L.panelW, L.panelH, 22);
+  ctx.fillStyle = 'rgba(15,23,42,0.82)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Corner gems on the panel frame.
+  drawGemShape(ctx, 'star4', L.panelX + 6, L.panelY + 6, 12, 'yellow', t, 0);
+  drawGemShape(ctx, 'diamond', L.panelX + L.panelW - 6, L.panelY + 6, 12, 'blue', t, 1);
+  drawGemShape(ctx, 'penta', L.panelX + 6, L.panelY + L.panelH - 6, 12, 'orange', t, 2);
+  drawGemShape(ctx, 'star6', L.panelX + L.panelW - 6, L.panelY + L.panelH - 6, 12, 'red', t, 3);
+
+  const flash = g.lineFlash; // {rows:[], cols:[], life} while a clear animates
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const { x, y } = cellXY(r, c);
+      const inFlash = flash && (flash.rows.includes(r) || flash.cols.includes(c));
+      // Empty cell: translucent tile, checker tint.
+      rr(ctx, x + 2, y + 2, L.cell - 4, L.cell - 4, 10);
+      ctx.fillStyle = (r + c) % 2 === 0 ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.05)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
       ctx.lineWidth = 1;
-      const L = s.r * 3.2;
-      ctx.beginPath();
-      ctx.moveTo(s.x - L, s.y);
-      ctx.lineTo(s.x + L, s.y);
-      ctx.moveTo(s.x, s.y - L);
-      ctx.lineTo(s.x, s.y + L);
+      ctx.stroke();
+      const cell = g.grid[r][c];
+      if (!cell) continue;
+      if (inFlash) {
+        // Flashing white-hot while the line clears (always bright: the
+        // alpha never dips near zero at the frozen shot clock).
+        ctx.save();
+        ctx.globalAlpha = 0.7 + 0.3 * Math.abs(Math.sin(t * 18));
+        rr(ctx, x + 2, y + 2, L.cell - 4, L.cell - 4, 10);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
+      if (cell.kind === 'stone') { drawStone(ctx, x + 2, y + 2, L.cell - 4); continue; }
+      // Block tile, then the gem jewel on top for gem cells.
+      drawTile(ctx, x + 2, y + 2, L.cell - 4, cell.color, t);
+      if (cell.kind === 'gem') {
+        const bob = Math.sin(t * 2.2 + (r * 7 + c) * 0.7) * 2;
+        drawGemShape(ctx, colorById(cell.color).shape, x + L.cell / 2, y + L.cell / 2 + bob, L.cell * 0.3, cell.color, t, r * 3 + c);
+      }
+    }
+  }
+
+  // Ghost preview for the dragged piece.
+  if (g.drag && g.drag.hover) {
+    const p = g.drag.piece;
+    for (const [dr, dc] of p.shape.cells) {
+      const r = g.drag.hover.r + dr, c = g.drag.hover.c + dc;
+      if (r < 0 || r >= GRID || c < 0 || c >= GRID) continue;
+      const { x, y } = cellXY(r, c);
+      rr(ctx, x + 3, y + 3, L.cell - 6, L.cell - 6, 9);
+      ctx.fillStyle = g.drag.fits ? 'rgba(74,222,128,0.55)' : 'rgba(239,68,68,0.55)';
+      ctx.fill();
+      ctx.strokeStyle = g.drag.fits ? '#4ade80' : '#ef4444';
+      ctx.lineWidth = 2;
       ctx.stroke();
     }
   }
-  ctx.globalAlpha = 1;
 }
 
-function drawPlanet(ctx, p, t) {
-  if (p.hole) {
-    drawBlackHole(ctx, p, t);
-    return;
-  }
+// ---- Tray ----
+export function traySlot(i) {
+  const w = 160, h = 96, gap = 24;
+  const total = 3 * w + 2 * gap;
+  const x0 = (W - total) / 2;
+  return { x: x0 + i * (w + gap), y: L.trayY + 6, w, h };
+}
+function drawPieceCells(ctx, piece, cx, cy, cell, scale = 1, alpha = 1) {
+  const rows = Math.max(...piece.shape.cells.map(([r]) => r)) + 1;
+  const cols = Math.max(...piece.shape.cells.map(([, c]) => c)) + 1;
+  const w = cols * cell, h = rows * cell;
+  const x0 = cx - (w * scale) / 2, y0 = cy - (h * scale) / 2;
   ctx.save();
-  // Ring, back half (behind the body).
-  if (p.ring) {
-    ctx.strokeStyle = p.color;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 7;
-    ctx.beginPath();
-    ctx.ellipse(p.x, p.y, p.r * 1.7, p.r * 0.42, -0.35, Math.PI, Math.PI * 2);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+  ctx.globalAlpha = alpha;
+  for (const [r, c] of piece.shape.cells) {
+    drawTile(ctx, x0 + c * cell * scale, y0 + r * cell * scale, cell * scale - 2, piece.color);
   }
-  // Atmosphere glow.
-  ctx.shadowColor = p.color;
-  ctx.shadowBlur = 34;
-  const g = ctx.createRadialGradient(
-    p.x - p.r * 0.35, p.y - p.r * 0.4, p.r * 0.1,
-    p.x, p.y, p.r,
-  );
-  g.addColorStop(0, '#ffffff');
-  g.addColorStop(0.25, p.color);
-  g.addColorStop(1, p.core);
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+  ctx.restore();
+}
+function drawTray(ctx, g) {
+  rr(ctx, L.trayX, L.trayY, L.trayW, L.trayH, 20);
+  ctx.fillStyle = 'rgba(15,23,42,0.78)';
   ctx.fill();
-  ctx.shadowBlur = 0;
-  // Gas-giant bands, clipped to the disc.
-  if (p.banded) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = '#ffffff';
-    for (let i = -1; i <= 1; i++) {
-      ctx.fillRect(p.x - p.r, p.y + i * p.r * 0.55 - p.r * 0.12, p.r * 2, p.r * 0.24);
-    }
-    ctx.globalAlpha = 0.16;
-    ctx.fillStyle = p.core;
-    ctx.fillRect(p.x - p.r, p.y - p.r * 0.05, p.r * 2, p.r * 0.18);
-    ctx.restore();
-  }
-  // Craters, deterministic from the planet's position.
-  if (p.craters) {
-    const rng = mulberry32(Math.floor(p.x * 7 + p.y * 13 + 5));
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.clip();
-    for (let i = 0; i < p.craters; i++) {
-      const a = rng() * Math.PI * 2;
-      const d = rng() * p.r * 0.62;
-      const cx = p.x + Math.cos(a) * d;
-      const cy = p.y + Math.sin(a) * d;
-      const cr = p.r * (0.09 + rng() * 0.1);
-      ctx.globalAlpha = 0.28;
-      ctx.fillStyle = p.core;
-      ctx.beginPath();
-      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 0.18;
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(cx - cr * 0.3, cy - cr * 0.3, cr * 0.55, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-  ctx.globalAlpha = 1;
-  // Rim light.
-  ctx.strokeStyle = p.color;
-  ctx.globalAlpha = 0.55;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r - 1, Math.PI * 0.9, Math.PI * 1.7);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2.5;
   ctx.stroke();
-  ctx.globalAlpha = 1;
-  // Slow rotating surface band.
-  ctx.globalAlpha = 0.18;
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 15px ${TITLE_FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('DRAG A PIECE  ➜', L.trayX + 18, L.trayY + 24);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font = `700 13px ${BODY_FONT}`;
+  ctx.fillText('drop it on the board — fill a line!', L.trayX + 18, L.trayY + 46);
+  for (let i = 0; i < 3; i++) {
+    const slot = traySlot(i);
+    const piece = g.tray[i];
+    rr(ctx, slot.x, slot.y, slot.w, slot.h, 14);
+    ctx.fillStyle = piece && !piece.used ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)';
+    ctx.fill();
+    ctx.strokeStyle = piece && !piece.used ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    if (!piece || piece.used) continue;
+    if (g.drag && g.drag.piece === piece) continue; // drawn at the mouse
+    const bob = Math.sin(g.time * 2 + i * 1.7) * 2;
+    const cell = Math.min(30, 132 / Math.max(...piece.shape.cells.map(([, c]) => c + 1)), 76 / Math.max(...piece.shape.cells.map(([r]) => r + 1)));
+    drawPieceCells(ctx, piece, slot.x + slot.w / 2, slot.y + slot.h / 2 + bob, cell);
+  }
+  // The dragged piece is drawn after the side panel (drawDrag), so it is
+  // never hidden behind the panel.
+}
+
+// Dragged piece follows the mouse, slightly enlarged with a shadow.
+// Drawn after the side panel so it stays on top of everything on the board.
+function drawDrag(ctx, g) {
+  if (!g.drag) return;
+  const p = g.drag.piece;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 8;
+  drawPieceCells(ctx, p, g.drag.x, g.drag.y, 40, 1.05);
+  ctx.restore();
+}
+
+// ---- HUD ----
+function drawHUD(ctx, g) {
+  // Score pill (left).
+  pill(ctx, 24, 14, 300, 46, 'rgba(15,23,42,0.8)');
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 13px ${TITLE_FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SCORE', 44, 28);
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.ellipse(p.x, p.y, p.r * 0.92, p.r * 0.3, 0.4 + 0.05 * Math.sin(t * 0.2), 0, Math.PI * 2);
+  ctx.font = `900 24px ${MONO_FONT}`;
+  ctx.fillText(String(g.score).padStart(6, '0'), 44, 46);
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
+  ctx.font = `700 12px ${BODY_FONT}`;
+  ctx.textAlign = 'right';
+  ctx.fillText(`BEST ${Math.max(g.best, g.score)}`, 308, 28);
+
+  // Combo pill (center) — flames up while a combo is hot.
+  const hot = g.combo > 1 && g.comboTimer > 0;
+  const pulse = hot ? 1 + 0.06 * Math.sin(g.time * 10) : 1;
+  ctx.save();
+  ctx.translate(640, 37);
+  ctx.scale(pulse, pulse);
+  pill(ctx, -120, -23, 240, 46, hot ? '#ea580c' : 'rgba(15,23,42,0.8)', hot ? '#fdba74' : 'rgba(255,255,255,0.35)');
+  ctx.fillStyle = hot ? '#fff7ed' : '#fde68a';
+  ctx.font = `900 ${hot ? 24 : 18}px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText(hot ? `🔥 COMBO x${g.combo}` : 'COMBO x1', 0, 1);
+  ctx.restore();
+
+  // Level pill (right).
+  pill(ctx, 872, 14, 190, 46, 'rgba(15,23,42,0.8)');
+  ctx.fillStyle = '#c4b5fd';
+  ctx.font = `900 13px ${TITLE_FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText(g.classic ? 'CLASSIC' : `LEVEL ${g.level ? g.level.n : 1}/30`, 892, 28);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 20px ${TITLE_FONT}`;
+  ctx.fillText(g.classic ? 'ENDLESS' : (g.level ? g.level.name : ''), 892, 46);
+
+  // Sound + menu buttons.
+  const snd = g.muted ? '🔇' : '🔊';
+  // HUD buttons are inactive while the pause menu is open (its own buttons
+  // are the only clickable ones there).
+  const hudActive = g.mode !== 'menu';
+  drawButton(ctx, g, 'sound', 1080, 14, 46, 46, snd, '#0ea5e9', '#0369a1', '#fff', 20, hudActive);
+  drawButton(ctx, g, 'menu', 1138, 14, 46, 46, '☰', '#8b5cf6', '#5b21b6', '#fff', 22, hudActive);
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.font = `700 12px ${BODY_FONT}`;
+  ctx.textAlign = 'right';
+  ctx.fillText('M mute', 1256, 68);
+}
+
+// ---- Side panel: targets, stats, tips ----
+function drawSide(ctx, g) {
+  rr(ctx, L.sideX, L.sideY, L.sideW, L.sideH, 22);
+  ctx.fillStyle = 'rgba(15,23,42,0.82)';
   ctx.fill();
-  ctx.globalAlpha = 1;
-  // Ring, front half.
-  if (p.ring) {
-    ctx.strokeStyle = p.color;
-    ctx.globalAlpha = 0.85;
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  let y = L.sideY + 18;
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 20px ${TITLE_FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🎯  COLLECT THE GEMS', L.sideX + 24, y);
+  y += 14;
+  if (g.classic) {
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = `700 17px ${BODY_FONT}`;
+    ctx.fillText('No targets — just keep clearing!', L.sideX + 24, y + 22);
+    ctx.fillText('Fill rows and columns to blast them.', L.sideX + 24, y + 46);
+    ctx.fillText('Game over when no piece fits.', L.sideX + 24, y + 70);
+  } else if (g.level) {
+    const targets = g.level.targets;
+    const got = g.collected;
+    for (const id of Object.keys(targets)) {
+      const c = colorById(id);
+      const need = targets[id];
+      const have = Math.min(got[id] || 0, need);
+      const done = have >= need;
+      const rowY = y + 22;
+      drawGemShape(ctx, c.shape, L.sideX + 48, rowY, 17, id, g.time, have);
+      ctx.fillStyle = done ? '#4ade80' : '#ffffff';
+      ctx.font = `900 17px ${TITLE_FONT}`;
+      ctx.textAlign = 'left';
+      ctx.fillText(c.name, L.sideX + 78, rowY);
+      // Progress bar.
+      const bx = L.sideX + 210, bw = 260;
+      rr(ctx, bx, rowY - 9, bw, 18, 9);
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.fill();
+      rr(ctx, bx, rowY - 9, (bw * have) / Math.max(1, need), 18, 9);
+      ctx.fillStyle = done ? '#4ade80' : c.main;
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `900 17px ${MONO_FONT}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${have}/${need}`, L.sideX + L.sideW - 24, rowY);
+      if (done) {
+        ctx.fillStyle = '#4ade80';
+        ctx.font = `900 22px ${TITLE_FONT}`;
+        ctx.fillText('✓', L.sideX + L.sideW - 66, rowY - 1);
+      }
+      y += 44;
+    }
+    const left = Object.values(targets).reduce((a, b) => a + b, 0) - Object.values(got).reduce((a, b) => a + b, 0);
+    ctx.fillStyle = left === 0 ? '#4ade80' : '#fde68a';
+    ctx.font = `900 16px ${TITLE_FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(left === 0 ? 'ALL GEMS COLLECTED — BLAST AWAY!' : `${left} gems to go — clear lines through them!`, L.sideX + 24, y + 18);
+    y += 44;
+  }
+  // Stats grid.
+  y += 18;
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 18px ${TITLE_FONT}`;
+  ctx.fillText('📊  RUN STATS', L.sideX + 24, y);
+  y += 30;
+  const stats = [
+    ['LINES BLASTED', String(g.linesCleared)],
+    ['BEST COMBO', `x${g.bestCombo}`],
+    ['PIECES PLACED', String(g.piecesPlaced)],
+    ['GEMS COLLECTED', String(Object.values(g.collected).reduce((a, b) => a + b, 0))],
+  ];
+  ctx.font = `900 22px ${MONO_FONT}`;
+  for (let i = 0; i < stats.length; i++) {
+    const col = i % 2, row = Math.floor(i / 2);
+    const sx = L.sideX + 24 + col * 280;
+    const sy = y + row * 44;
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.font = `700 12px ${BODY_FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(stats[i][0], sx, sy - 6);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 24px ${MONO_FONT}`;
+    ctx.fillText(stats[i][1], sx, sy + 16);
+  }
+  y += 108;
+  // Restart + tip.
+  // Side-panel buttons are inactive while the pause menu is open: its MAIN
+  // MENU button overlaps this RESTART button and must win the click.
+  const sideActive = g.mode === 'play';
+  drawButton(ctx, g, 'restart', L.sideX + 24, y, 200, 44, '↻  RESTART', '#f43f5e', '#9f1239', '#fff', 22, sideActive);
+  drawButton(ctx, g, 'hint', L.sideX + 244, y, 308, 44, '💡  TIP: SAVE BIG PIECES', '#0ea5e9', '#0369a1', '#fff', 15, sideActive);
+  y += 62;
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = `700 14px ${BODY_FONT}`;
+  ctx.textAlign = 'left';
+  const tip = g.tip || 'Corners love L-pieces. Big squares love 3x3s.';
+  for (const line of wrapText(ctx, tip, L.sideW - 48)) {
+    ctx.fillText(line, L.sideX + 24, y);
+    y += 20;
+  }
+}
+
+// ---- Particles, popups, banner ----
+function drawParticles(ctx, g) {
+  for (const p of g.particles) {
+    const f = Math.max(0, p.life / p.max);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, f * 1.4);
+    if (p.kind === 'shard') {
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.7);
+    } else if (p.kind === 'ring') {
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 4 * f + 1;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (p.kind === 'gemfly') {
+      drawGemShape(ctx, colorById(p.color).shape, p.x, p.y, p.size, p.color, g.time, p.phase);
+    } else {
+      // spark
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * f + 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  for (const pop of g.popups) {
+    const f = Math.max(0, pop.life / pop.max);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, f * 1.6);
+    ctx.font = `900 ${pop.big ? 40 : 26}px ${TITLE_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     ctx.lineWidth = 7;
-    ctx.beginPath();
-    ctx.ellipse(p.x, p.y, p.r * 1.7, p.r * 0.42, -0.35, 0, Math.PI);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.strokeStyle = 'rgba(15,23,42,0.9)';
+    ctx.strokeText(pop.text, pop.x, pop.y - (1 - f) * 30);
+    ctx.fillStyle = pop.color;
+    ctx.fillText(pop.text, pop.x, pop.y - (1 - f) * 30);
+    ctx.restore();
   }
-  ctx.restore();
-}
-
-function drawBlackHole(ctx, p, t) {
-  ctx.save();
-  // Accretion glow.
-  ctx.shadowColor = '#f59e0b';
-  ctx.shadowBlur = 46;
-  ctx.strokeStyle = '#fb923c';
-  ctx.globalAlpha = 0.9;
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.ellipse(p.x, p.y, p.r * 1.25, p.r * 0.42, -0.3, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  // Swirling inner ring.
-  ctx.strokeStyle = '#fde68a';
-  ctx.globalAlpha = 0.85;
-  ctx.lineWidth = 3;
-  ctx.setLineDash([26, 18]);
-  ctx.lineDashOffset = -t * 30;
-  ctx.beginPath();
-  ctx.ellipse(p.x, p.y, p.r * 0.95, p.r * 0.34, -0.3, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  // The dark event horizon itself.
-  const g = ctx.createRadialGradient(p.x, p.y, p.r * 0.1, p.x, p.y, p.r * 0.78);
-  g.addColorStop(0, '#000000');
-  g.addColorStop(0.8, '#0a0618');
-  g.addColorStop(1, '#2e1065');
-  ctx.fillStyle = g;
-  ctx.globalAlpha = 1;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r * 0.78, 0, Math.PI * 2);
-  ctx.fill();
-  // Photon ring.
-  ctx.strokeStyle = '#e9d5ff';
-  ctx.globalAlpha = 0.9;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r * 0.78, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawAsteroid(ctx, a, t) {
-  ctx.save();
-  ctx.translate(a.x, a.y);
-  ctx.rotate(a.rot);
-  ctx.fillStyle = '#8d7d6b';
-  ctx.strokeStyle = '#57534e';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < a.verts.length; i++) {
-    const ang = (i / a.verts.length) * Math.PI * 2;
-    const rad = a.r * a.verts[i];
-    const px = Math.cos(ang) * rad;
-    const py = Math.sin(ang) * rad;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
+  if (g.banner && g.banner.life > 0) {
+    const b = g.banner;
+    const f = Math.min(1, b.life / (b.max * 0.5));
+    const pop = 1 + 0.25 * Math.max(0, (b.life - b.max * 0.7) / (b.max * 0.3));
+    ctx.save();
+    ctx.translate(b.x ?? 640, b.y ?? 300);
+    ctx.scale(pop, pop);
+    ctx.globalAlpha = Math.min(1, f * 1.5);
+    ctx.font = `900 64px ${TITLE_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 12;
+    ctx.strokeStyle = 'rgba(15,23,42,0.95)';
+    ctx.strokeText(b.text, 0, 0);
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.text, 0, 0);
+    if (b.sub) {
+      ctx.font = `900 26px ${TITLE_FONT}`;
+      ctx.lineWidth = 8;
+      ctx.strokeText(b.sub, 0, 52);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(b.sub, 0, 52);
+    }
+    ctx.restore();
   }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath();
-  ctx.arc(-a.r * 0.25, -a.r * 0.2, a.r * 0.28, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.18)';
-  ctx.beginPath();
-  ctx.arc(a.r * 0.3, a.r * 0.25, a.r * 0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
 }
 
-function drawPowerup(ctx, p, t) {
-  const def = POWERUPS[p.kind];
-  const pulse = 1 + 0.14 * Math.sin(t * 4 + p.phase);
+// ---- Chunky logo ----
+function drawLogo(ctx, cx, y, size, t, bounce = true) {
+  const letters = 'AMBLAST'.split('');
+  const colors = ['#f97316', '#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#ec4899'];
   ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.shadowColor = def.color;
-  ctx.shadowBlur = 24;
-  ctx.fillStyle = def.color;
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  ctx.arc(0, 0, 13 * pulse, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = '#04101e';
-  ctx.beginPath();
-  ctx.arc(0, 0, 9 * pulse, 0, Math.PI * 2);
-  ctx.fill();
-  // Icon letter.
-  ctx.fillStyle = def.color;
-  ctx.font = 'bold 12px "Courier New", monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(p.kind === 'shield' ? 'S' : p.kind === 'slow' ? 'T' : p.kind === 'life' ? '+' : 'F', 0, 1);
-  ctx.textBaseline = 'alphabetic';
-  // Orbiting ring.
-  ctx.strokeStyle = def.color;
-  ctx.globalAlpha = 0.6;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(0, 0, 19 + 2 * Math.sin(t * 3 + p.phase), 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-  // Label under the orb.
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 11px "Courier New", monospace';
-  ctx.fillStyle = def.color;
-  ctx.shadowColor = def.color;
-  ctx.shadowBlur = 8;
-  ctx.fillText(def.label, p.x, p.y + 34);
+  const w = size * 0.72;
+  const total = letters.length * w;
+  letters.forEach((ch, i) => {
+    const bob = bounce ? Math.sin(t * 3 + i * 0.55) * size * 0.045 : 0;
+    const rot = Math.sin(t * 1.6 + i * 0.9) * 0.05;
+    const x = cx - total / 2 + w * (i + 0.5);
+    ctx.save();
+    ctx.translate(x, y + bob);
+    ctx.rotate(rot);
+    ctx.font = `900 ${size}px ${TITLE_FONT}`;
+    ctx.lineWidth = size * 0.14;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(15,23,42,0.9)';
+    ctx.strokeText(ch, 0, 0);
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillText(ch, 0, 0);
+    // Gloss.
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.font = `900 ${size * 0.42}px ${TITLE_FONT}`;
+    ctx.fillText(ch, 0, -size * 0.16);
+    ctx.restore();
+  });
   ctx.restore();
 }
 
-function drawStar(ctx, x, y, t, phase) {
-  const pulse = 1 + 0.18 * Math.sin(t * 3 + phase);
-  const r = 11 * pulse;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(Math.sin(t * 0.8 + phase) * 0.35);
-  ctx.shadowColor = '#fbbf24';
-  ctx.shadowBlur = 22;
+// ---- Screens ----
+function drawTitle(ctx, g) {
+  const t = g.time;
+  // Big floating gems framing the logo.
+  drawGemShape(ctx, 'star4', 130, 150, 34, 'green', t, 0);
+  drawGemShape(ctx, 'penta', 1150, 130, 38, 'orange', t, 1);
+  drawGemShape(ctx, 'star6', 90, 480, 30, 'red', t, 2);
+  drawGemShape(ctx, 'bloom', 1190, 470, 32, 'purple', t, 3);
+  drawGemShape(ctx, 'diamond', 240, 620, 26, 'blue', t, 4);
+  drawGemShape(ctx, 'hexa', 1040, 630, 26, 'yellow', t, 5);
+  drawGemShape(ctx, 'star4', 330, 90, 20, 'blue', t, 6);
+  drawGemShape(ctx, 'penta', 950, 80, 20, 'green', t, 7);
+  drawLogo(ctx, 640, 168, 118, t);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 30px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('★  GEM BLOCK PUZZLE  ★', 640, 252);
   ctx.fillStyle = '#fde68a';
-  ctx.beginPath();
-  for (let i = 0; i < 8; i++) {
-    const ang = (i * Math.PI) / 4;
-    const rad = i % 2 === 0 ? r : r * 0.42;
-    const px = Math.cos(ang) * rad;
-    const py = Math.sin(ang) * rad;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.closePath();
+  ctx.font = `700 19px ${BODY_FONT}`;
+  ctx.fillText('Drag the blocks. Blast the lines. Collect every gem!', 640, 286);
+
+  // Adventure progress card.
+  rr(ctx, 390, 318, 500, 74, 18);
+  ctx.fillStyle = 'rgba(15,23,42,0.8)';
   ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#fff7cc';
-  ctx.beginPath();
-  ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawProbe(ctx, g, t) {
-  const p = g.probe;
-  ctx.save();
-  ctx.translate(p.x, p.y);
-  const ang = Math.atan2(p.vy, p.vx);
-  ctx.rotate(g.mode === 'aim' ? Math.atan2(g.aim.y - p.y, g.aim.x - p.x) : ang);
-  // Engine flame while charging or flying fast.
-  const flame = g.mode === 'aim' && g.charging ? 0.6 + 0.4 * Math.sin(t * 30) : 0;
-  if (flame > 0 || g.mode === 'fly') {
-    const fl = (flame > 0 ? 16 + 14 * flame : 10) * Math.min(1, Math.hypot(p.vx, p.vy) / 300 + 0.3);
-    const fg = ctx.createLinearGradient(-8, 0, -8 - fl, 0);
-    fg.addColorStop(0, 'rgba(255, 220, 120, 0.95)');
-    fg.addColorStop(1, 'rgba(255, 90, 40, 0)');
-    ctx.fillStyle = fg;
-    ctx.beginPath();
-    ctx.moveTo(-8, -5);
-    ctx.lineTo(-8 - fl, 0);
-    ctx.lineTo(-8, 5);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.shadowColor = '#67e8f9';
-  ctx.shadowBlur = 16;
-  const bg = ctx.createLinearGradient(-10, 0, 12, 0);
-  bg.addColorStop(0, '#0e7490');
-  bg.addColorStop(1, '#a5f3fc');
-  ctx.fillStyle = bg;
-  ctx.beginPath();
-  ctx.moveTo(14, 0);
-  ctx.lineTo(-10, -8);
-  ctx.lineTo(-5, 0);
-  ctx.lineTo(-10, 8);
-  ctx.closePath();
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#ecfeff';
-  ctx.beginPath();
-  ctx.arc(2, 0, 3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-  // Shield bubble.
-  if (g.shield) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.85)';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = '#22d3ee';
-    ctx.shadowBlur = 14;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 22 + 2 * Math.sin(t * 5), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
-function drawTrail(ctx, g) {
-  for (const pt of g.trail) {
-    ctx.globalAlpha = Math.max(0, pt.life / pt.max) * 0.7;
-    ctx.fillStyle = pt.color;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, pt.size * (pt.life / pt.max), 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawParticles(ctx, g) {
-  for (const pt of g.particles) {
-    ctx.globalAlpha = Math.max(0, pt.life / pt.max);
-    ctx.fillStyle = pt.color;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawRings(ctx, g) {
-  for (const r of g.rings) {
-    ctx.globalAlpha = Math.max(0, r.life / r.maxLife) * 0.8;
-    ctx.strokeStyle = r.color;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawPopups(ctx, g) {
-  ctx.textAlign = 'center';
-  for (const pp of g.popups) {
-    const a = Math.max(0, pp.life / pp.max);
-    ctx.globalAlpha = a;
-    ctx.font = `bold ${pp.big ? 30 : 20}px ${MONO_FONT}`;
-    ctx.fillStyle = pp.color;
-    ctx.shadowColor = pp.color;
-    ctx.shadowBlur = 12;
-    ctx.fillText(pp.text, pp.x, pp.y - (pp.max - pp.life) * 22);
-  }
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = 1;
-}
-
-function drawTrajectory(ctx, g) {
-  if (g.mode !== 'aim' || !g.charging) return;
-  const power = g.power;
-  const dx = g.aim.x - g.probe.x;
-  const dy = g.aim.y - g.probe.y;
-  const d = Math.hypot(dx, dy) || 1;
-  const speed = 80 + 460 * power;
-  const s0 = {
-    x: g.probe.x, y: g.probe.y,
-    vx: (dx / d) * speed, vy: (dy / d) * speed,
-  };
-  const pts = predictPath(g.planets, s0, 1 / 60, 240, 3);
-  ctx.save();
-  ctx.setLineDash([2, 9]);
-  ctx.lineCap = 'round';
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = 0.85 * (1 - i / pts.length);
-    ctx.strokeStyle = `rgba(165, 243, 252, ${a.toFixed(3)})`;
-    ctx.lineWidth = i < 2 ? 3 : 2;
-    ctx.beginPath();
-    ctx.moveTo(pts[i].x, pts[i].y);
-    ctx.lineTo(pts[i + 1].x, pts[i + 1].y);
-    ctx.stroke();
-  }
-  ctx.restore();
-  // Red IMPACT marker when the previewed path ends in a crash.
-  const hit = firstImpact(g.planets, s0, 1 / 60, 240);
-  if (hit) {
-    const hx = hit.x + ((g.probe.x - hit.x) / (Math.hypot(g.probe.x - hit.x, g.probe.y - hit.y) || 1)) * (hit.r + 10);
-    const hy = hit.y + ((g.probe.y - hit.y) / (Math.hypot(g.probe.x - hit.x, g.probe.y - hit.y) || 1)) * (hit.r + 10);
-    const pulse = 0.6 + 0.4 * Math.sin(g.time * 8);
-    ctx.save();
-    ctx.globalAlpha = pulse;
-    ctx.strokeStyle = '#f87171';
-    ctx.lineWidth = 3;
-    ctx.shadowColor = '#ef4444';
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.moveTo(hx - 9, hy - 9);
-    ctx.lineTo(hx + 9, hy + 9);
-    ctx.moveTo(hx + 9, hy - 9);
-    ctx.lineTo(hx - 9, hy + 9);
-    ctx.stroke();
-    ctx.font = `bold 12px ${MONO_FONT}`;
-    ctx.fillStyle = '#fca5a5';
-    ctx.textAlign = 'center';
-    ctx.fillText('IMPACT', hx, hy - 16);
-    ctx.restore();
-  }
-  // Aim direction arrow + power ring.
-  ctx.save();
-  ctx.strokeStyle = 'rgba(165, 243, 252, 0.9)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(g.probe.x, g.probe.y);
-  ctx.lineTo(g.probe.x + (dx / d) * 46, g.probe.y + (dy / d) * 46);
   ctx.stroke();
-  ctx.strokeStyle = '#fde68a';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(g.probe.x, g.probe.y, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * power);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function pill(ctx, x, y, text, color) {
-  ctx.save();
-  ctx.font = `bold 13px ${MONO_FONT}`;
-  const w = ctx.measureText(text).width + 18;
-  ctx.fillStyle = 'rgba(2, 6, 26, 0.75)';
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  rr(ctx, x - w, y - 15, w, 22, 11);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = color;
-  ctx.textAlign = 'right';
-  ctx.fillText(text, x - 9, y + 1);
-  ctx.restore();
-  return w;
-}
-
-function drawHUD(ctx, g) {
-  // Top bar.
-  ctx.fillStyle = 'rgba(2, 6, 26, 0.55)';
-  ctx.fillRect(0, 0, W, 64);
-  ctx.fillStyle = 'rgba(165, 243, 252, 0.25)';
-  ctx.fillRect(0, 64, W, 1);
-
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 22px ${TITLE_FONT}`;
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.font = `bold 22px ${MONO_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.shadowColor = '#0ea5e9';
-  ctx.shadowBlur = 8;
-  ctx.fillText(`SCORE ${String(g.score).padStart(6, '0')}`, 22, 32);
-  ctx.shadowBlur = 0;
-  ctx.font = `13px ${MONO_FONT}`;
-  ctx.fillStyle = '#94a3b8';
-  ctx.fillText(`BEST ${String(Math.max(g.best, g.score)).padStart(6, '0')}`, 22, 54);
-
-  // Level + stars remaining, top center.
-  ctx.textAlign = 'center';
-  ctx.font = `bold 18px ${MONO_FONT}`;
-  ctx.fillStyle = '#c4b5fd';
-  const left = g.starsLeft.filter((s) => !s.taken).length;
-  ctx.fillText(`LEVEL ${g.levelIndex + 1}/9 · ${g.level.name}`, W / 2, 30);
-  ctx.font = '16px ' + MONO_FONT;
+  ctx.fillText(`📍  Level ${g.maxUnlocked}`, 414, 344);
   ctx.fillStyle = '#fde68a';
-  ctx.fillText('★'.repeat(left) + '☆'.repeat(g.starsLeft.length - left), W / 2, 54);
+  ctx.font = `700 15px ${BODY_FONT}`;
+  ctx.fillText(`${g.maxUnlocked - 1} of 30 levels cleared  •  ${g.starsTotal}★ earned`, 414, 370);
+  rr(ctx, 414, 344 + 34, 452, 12, 6);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.fill();
+  rr(ctx, 414, 344 + 34, 452 * ((g.maxUnlocked - 1) / 30), 12, 6);
+  ctx.fillStyle = '#4ade80';
+  ctx.fill();
 
-  // Lives, top right.
-  ctx.textAlign = 'right';
-  ctx.fillStyle = '#fda4af';
-  ctx.font = `bold 14px ${MONO_FONT}`;
-  ctx.fillText('LIVES', W - 22, 26);
-  for (let i = 0; i < g.lives; i++) {
-    const x = W - 40 - i * 26;
-    ctx.save();
-    ctx.translate(x, 48);
-    ctx.fillStyle = '#a5f3fc';
+  drawButton(ctx, g, 'adventure', 440, 416, 400, 64, '🏆  ADVENTURE', '#f59e0b', '#92400e', '#fff', 26);
+  drawButton(ctx, g, 'classic', 440, 492, 400, 64, '∞  CLASSIC', '#10b981', '#065f46', '#fff', 26);
+  drawButton(ctx, g, 'howto', 440, 568, 400, 52, '❓  HOW TO PLAY', '#0ea5e9', '#0369a1', '#fff', 20);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = `700 16px ${BODY_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText(`BEST SCORE  ${g.best}`, 640, 652);
+  const blink = 0.6 + 0.4 * Math.sin(t * 3.5);
+  ctx.fillStyle = `rgba(255,255,255,${blink})`;
+  ctx.font = `900 17px ${TITLE_FONT}`;
+  ctx.fillText('CLICK ADVENTURE TO START', 640, 684);
+}
+
+function drawAdventure(ctx, g) {
+  const t = g.time;
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 46px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🏆  Adventure', 640, 84);
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `700 20px ${BODY_FONT}`;
+  ctx.fillText('Take part in the Adventure and win the trophy.', 640, 122);
+  // Trophy glow.
+  ctx.save();
+  ctx.globalAlpha = 0.35 + 0.15 * Math.sin(t * 2);
+  ctx.fillStyle = '#fbbf24';
+  ctx.beginPath();
+  ctx.arc(640, 178, 46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.font = '64px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('🏆', 640, 182);
+  // Level map: 3 rows of 10, snake order.
+  const rows = [250, 350, 450];
+  for (let n = 1; n <= 30; n++) {
+    const row = Math.floor((n - 1) / 10);
+    const idx = (n - 1) % 10;
+    const col = row % 2 === 0 ? idx : 9 - idx;
+    const x = 140 + col * 110;
+    const y = rows[row];
+    const done = n < g.maxUnlocked;
+    const current = n === g.maxUnlocked;
+    const locked = n > g.maxUnlocked;
+    if (current) {
+      ctx.save();
+      ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 5);
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.arc(x, y, 34, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.beginPath();
-    ctx.moveTo(8, 0);
-    ctx.lineTo(-7, -6);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-7, 6);
+    ctx.arc(x, y, 26, 0, Math.PI * 2);
+    ctx.fillStyle = done ? '#f59e0b' : current ? '#22c55e' : 'rgba(15,23,42,0.85)';
+    ctx.fill();
+    ctx.strokeStyle = done ? '#fde68a' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = locked ? 'rgba(255,255,255,0.45)' : '#ffffff';
+    ctx.font = `900 ${locked ? 20 : 19}px ${TITLE_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(locked ? '🔒' : String(n), x, y + 1);
+    if (done && (g.stars[n] || 0) > 0) {
+      ctx.fillStyle = '#fde68a';
+      ctx.font = '13px sans-serif';
+      ctx.fillText('★'.repeat(g.stars[n] || 0), x, y + 42);
+    }
+    g.ui.mapNodes.push({ n, x, y, r: 30, locked });
+  }
+  drawButton(ctx, g, 'back', 24, 16, 120, 44, '← BACK', '#64748b', '#334155');
+  drawButton(ctx, g, 'play-level', 440, 560, 400, 64, `▶  PLAY LEVEL ${g.maxUnlocked}`, '#22c55e', '#14532d', '#fff', 26);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = `700 16px ${BODY_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Tap a glowing level to play it — clear gems to unlock the next one!', 640, 652);
+}
+
+function drawHowto(ctx, g) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(10,10,40,0.72)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  rr(ctx, 290, 90, 700, 540, 24);
+  ctx.fillStyle = '#1e1b4b';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 34px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('HOW TO PLAY', 640, 140);
+  const lines = [
+    ['🖱️  DRAG', 'Pick up a block piece and drop it on the grid.'],
+    ['💥  BLAST', 'Fill a whole row or column — it explodes!'],
+    ['💎  COLLECT', 'Gems caught in a blast count toward the target.'],
+    ['🔥  COMBO', 'Blast lines on back-to-back drops for x2, x3…'],
+    ['😱  STUCK?', 'If no piece fits anywhere, the run is over!'],
+    ['🏆  WIN', 'Collect every target gem to clear the level.'],
+  ];
+  let y = 196;
+  for (const [head, body] of lines) {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 21px ${TITLE_FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(head, 330, y);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = `700 18px ${BODY_FONT}`;
+    ctx.fillText(body, 330, y + 28);
+    y += 62;
+  }
+  drawButton(ctx, g, 'close-howto', 490, 556, 300, 52, 'GOT IT!', '#22c55e', '#14532d', '#fff', 22);
+}
+
+function drawOverlayPanel(ctx, g, x, y, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(10,10,40,0.68)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  rr(ctx, x, y, w, h, 26);
+  ctx.fillStyle = '#1e1b4b';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function drawStars(ctx, cx, y, n, size = 46) {
+  for (let i = 0; i < 3; i++) {
+    const x = cx + (i - 1) * (size + 22);
+    const lit = i < n;
+    ctx.save();
+    ctx.translate(x, y);
+    if (lit) {
+      ctx.shadowColor = '#fbbf24';
+      ctx.shadowBlur = 18;
+    }
+    ctx.fillStyle = lit ? '#fbbf24' : 'rgba(255,255,255,0.18)';
+    ctx.beginPath();
+    const R = size / 2, r = R * 0.45;
+    for (let k = 0; k < 10; k++) {
+      const rad = k % 2 === 0 ? R : r;
+      const a = -Math.PI / 2 + (k * Math.PI) / 5;
+      const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
+      if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
     ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
-
-  // Active effect pills, below the top bar on the right.
-  let py = 92;
-  if (g.shield) {
-    pill(ctx, W - 22, py, 'SHIELD', '#22d3ee');
-    py += 30;
-  }
-  if (g.slowTimer > 0) {
-    pill(ctx, W - 22, py, `SLOW-MO ${g.slowTimer.toFixed(1)}s`, '#a78bfa');
-  }
-
-  // Bottom bar.
-  ctx.fillStyle = 'rgba(2, 6, 26, 0.55)';
-  ctx.fillRect(0, H - 66, W, 66);
-  ctx.fillStyle = 'rgba(165, 243, 252, 0.25)';
-  ctx.fillRect(0, H - 66, W, 1);
-
-  // Fuel bar, bottom left.
-  ctx.textAlign = 'left';
-  ctx.font = `bold 14px ${MONO_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.fillText('FUEL', 22, H - 44);
-  ctx.fillStyle = 'rgba(255,255,255,0.15)';
-  rr(ctx, 22, H - 34, 190, 12, 6);
-  ctx.fill();
-  const fw = Math.max(0, Math.min(1, g.fuel / g.fuelMax)) * 190;
-  ctx.fillStyle = g.fuel < 25 ? '#f87171' : '#34d399';
-  if (fw > 0) {
-    rr(ctx, 22, H - 34, fw, 12, 6);
-    ctx.fill();
-  }
-  ctx.font = `13px ${MONO_FONT}`;
-  ctx.fillStyle = '#94a3b8';
-  ctx.fillText(`${Math.round((g.fuel / g.fuelMax) * 100)}%`, 222, H - 22);
-
-  // Time / shots / hazard, bottom right.
-  ctx.textAlign = 'right';
-  ctx.font = `13px ${MONO_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.fillText(`TIME ${g.levelTime.toFixed(1)}s / PAR ${g.level.par}s · SHOTS ${g.shotsUsed}`, W - 22, H - 44);
-  ctx.fillStyle = '#fbbf24';
-  ctx.fillText(`HAZARD: ${g.level.hazard}`, W - 22, H - 22);
-
-  // Combo indicator with timer bar.
-  if (g.combo > 1 && g.comboTimer > 0) {
-    ctx.textAlign = 'center';
-    ctx.font = `bold 22px ${MONO_FONT}`;
-    ctx.fillStyle = '#fbbf24';
-    ctx.shadowColor = '#f59e0b';
-    ctx.shadowBlur = 14;
-    ctx.fillText(`COMBO x${g.combo}`, W / 2, H - 44);
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    rr(ctx, W / 2 - 60, H - 34, 120, 5, 2);
-    ctx.fill();
-    ctx.fillStyle = '#fbbf24';
-    rr(ctx, W / 2 - 60, H - 34, 120 * Math.max(0, g.comboTimer / 4), 5, 2);
-    ctx.fill();
-  }
-
-  // Hint, bottom center.
-  if (g.hint) {
-    ctx.textAlign = 'center';
-    ctx.font = `15px ${MONO_FONT}`;
-    ctx.fillStyle = 'rgba(224, 242, 254, 0.75)';
-    ctx.fillText(g.hint, W / 2, H - 12);
-  }
-
-  // SLOW-MO screen tint.
-  if (g.slowTimer > 0) {
-    ctx.strokeStyle = `rgba(167, 139, 250, ${0.25 + 0.15 * Math.sin(g.time * 6)})`;
-    ctx.lineWidth = 6;
-    ctx.strokeRect(3, 3, W - 6, H - 6);
-  }
-}
-
-function panel(ctx, x, y, w, h) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(4, 6, 28, 0.82)';
-  ctx.strokeStyle = 'rgba(165, 243, 252, 0.45)';
-  ctx.lineWidth = 1.5;
-  rr(ctx, x, y, w, h, 14);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawTitle(ctx, g, t) {
-  // Decorative orbit scene behind the title, on the empty left side.
-  ctx.save();
-  ctx.globalAlpha = 0.9;
-  ctx.strokeStyle = 'rgba(165, 243, 252, 0.35)';
-  ctx.setLineDash([3, 10]);
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.ellipse(240, 430, 260, 100, -0.18, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  const ox = 240 + 260 * Math.cos(t * 0.25);
-  const oy = 430 + 100 * Math.sin(t * 0.25) * Math.cos(-0.18) - 260 * Math.sin(t * 0.25) * Math.sin(-0.18) * 0.4;
-  ctx.restore();
-  drawPlanet(ctx, { x: 240, y: 430, r: 55, mu: 0, color: '#2dd4bf', core: '#0f766e' }, t);
-  drawPlanet(ctx, { x: 165, y: 140, r: 30, mu: 0, color: '#facc15', core: '#854d0e', ring: true }, t);
-  drawPlanet(ctx, { x: 1120, y: 560, r: 24, mu: 0, color: '#f472b6', core: '#9d174d', craters: 4 }, t);
-  drawPowerup(ctx, { x: 1090, y: 130, kind: 'shield', phase: 0 }, t);
-  drawPowerup(ctx, { x: 180, y: 580, kind: 'slow', phase: 2 }, t);
-  drawProbe(ctx, { ...g, probe: { x: ox, y: oy, vx: 1, vy: 0.3 }, mode: 'fly', aim: { x: 0, y: 0 }, charging: false }, t);
-
-  ctx.textAlign = 'center';
-  const grad = ctx.createLinearGradient(0, 130, 0, 250);
-  grad.addColorStop(0, '#a5f3fc');
-  grad.addColorStop(0.5, '#67e8f9');
-  grad.addColorStop(1, '#c084fc');
-  ctx.font = `900 108px ${TITLE_FONT}`;
-  ctx.shadowColor = '#22d3ee';
-  ctx.shadowBlur = 42;
-  ctx.fillStyle = grad;
-  ctx.fillText('ORBITAL', W / 2, 225);
-  ctx.shadowBlur = 0;
-  ctx.font = `600 24px ${TITLE_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.fillText('a gravity-slingshot arcade', W / 2, 268);
-
-  panel(ctx, 390, 300, 500, 200);
-  ctx.fillStyle = '#c4b5fd';
-  ctx.font = `bold 17px ${MONO_FONT}`;
-  ctx.fillText('HOW TO FLY', W / 2, 332);
-  ctx.fillStyle = '#e0f2fe';
-  ctx.font = `16px ${MONO_FONT}`;
-  ctx.fillText('MOVE MOUSE to aim · HOLD to charge thrust', W / 2, 366);
-  ctx.fillText('RELEASE to slingshot around the planets', W / 2, 394);
-  ctx.fillText('COLLECT every star · DON’T crash, don’t drift off', W / 2, 422);
-  ctx.fillText('Grab power-ups: SHIELD · SLOW-MO · +1 LIFE · FUEL', W / 2, 450);
-  ctx.fillText('Arrows / WASD aim too · SPACE charges · R restarts', W / 2, 478);
-
-  // Feature strip.
-  ctx.font = `bold 15px ${MONO_FONT}`;
-  ctx.fillStyle = '#fbbf24';
-  ctx.shadowColor = '#f59e0b';
-  ctx.shadowBlur = 10;
-  ctx.fillText('9 SYSTEMS · POWER-UPS · ORBITING WORLDS · ASTEROID FIELDS · THE SINGULARITY', W / 2, 536);
-  ctx.shadowBlur = 0;
-
-  const blink = 0.55 + 0.45 * Math.sin(t * 4);
-  ctx.globalAlpha = blink;
-  ctx.font = `bold 22px ${MONO_FONT}`;
-  ctx.fillStyle = '#fde68a';
-  ctx.shadowColor = '#f59e0b';
-  ctx.shadowBlur = 16;
-  ctx.fillText('CLICK OR PRESS SPACE TO LAUNCH', W / 2, 586);
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = 1;
-
-  if (g.best > 0) {
-    ctx.font = `16px ${MONO_FONT}`;
-    ctx.fillStyle = '#94a3b8';
-    ctx.fillText(`BEST SCORE  ${g.best}`, W / 2, 626);
-  }
-  ctx.font = `14px ${MONO_FONT}`;
-  ctx.fillStyle = 'rgba(148, 163, 184, 0.8)';
-  ctx.fillText('M mute · 9 systems · 3 lives · power-ups · no fuel, no flight', W / 2, 690);
-}
-
-function drawBrief(ctx, g) {
-  ctx.fillStyle = 'rgba(2, 4, 20, 0.6)';
-  ctx.fillRect(0, 0, W, H);
-  const pw = 600;
-  const px = (W - pw) / 2;
-  panel(ctx, px, 170, pw, 330);
-  ctx.textAlign = 'center';
-  ctx.font = `bold 15px ${MONO_FONT}`;
-  ctx.fillStyle = '#67e8f9';
-  ctx.fillText('— MISSION BRIEFING —', W / 2, 208);
-  ctx.font = `900 34px ${TITLE_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.shadowColor = '#22d3ee';
-  ctx.shadowBlur = 18;
-  ctx.fillText(`LEVEL ${g.levelIndex + 1}/9 · ${g.level.name}`, W / 2, 256);
-  ctx.shadowBlur = 0;
-  ctx.font = `16px ${MONO_FONT}`;
-  ctx.fillStyle = '#cbd5e1';
-  const lines = wrapText(ctx, g.level.brief, pw - 90);
-  let y = 292;
-  for (const ln of lines) {
-    ctx.fillText(ln, W / 2, y);
-    y += 26;
-  }
-  y += 10;
-  ctx.font = `bold 16px ${MONO_FONT}`;
-  ctx.fillStyle = '#fde68a';
-  ctx.fillText(`COLLECT ${g.level.stars.length} STARS`, W / 2, y);
-  y += 28;
-  ctx.fillStyle = '#fda4af';
-  const pu = g.powerupsLeft.length
-    ? `POWER-UPS: ${g.powerupsLeft.map((p) => POWERUPS[p.kind].label).join(' · ')}`
-    : 'POWER-UPS: none on this system';
-  ctx.fillText(pu, W / 2, y);
-  y += 28;
-  ctx.fillStyle = '#fbbf24';
-  ctx.fillText(`HAZARD: ${g.level.hazard}`, W / 2, y);
-  const blink = 0.55 + 0.45 * Math.sin(g.time * 4);
-  ctx.globalAlpha = blink;
-  ctx.font = `bold 18px ${MONO_FONT}`;
-  ctx.fillStyle = '#a5f3fc';
-  ctx.fillText(`LAUNCHING IN ${Math.max(1, Math.ceil(g.briefTimer))} — CLICK TO SKIP`, W / 2, 462);
-  ctx.globalAlpha = 1;
 }
 
 function drawClear(ctx, g) {
-  ctx.fillStyle = 'rgba(2, 4, 20, 0.55)';
-  ctx.fillRect(0, 0, W, H);
-  panel(ctx, 360, 200, 560, 300);
+  drawOverlayPanel(ctx, g, 340, 120, 600, 480);
+  const info = g.clearInfo || { grade: 'S', stars: 3 };
+  ctx.fillStyle = '#4ade80';
+  ctx.font = `900 52px ${TITLE_FONT}`;
   ctx.textAlign = 'center';
-  ctx.font = `900 44px ${TITLE_FONT}`;
-  ctx.fillStyle = '#a3e635';
-  ctx.shadowColor = '#65a30d';
-  ctx.shadowBlur = 24;
-  ctx.fillText('LEVEL CLEAR', W / 2, 272);
-  ctx.shadowBlur = 0;
-  // Grade, big on the right side of the panel.
-  const c = g.clearInfo;
-  ctx.font = `900 84px ${TITLE_FONT}`;
-  ctx.fillStyle = c.grade === 'S' ? '#fbbf24' : c.grade === 'A' ? '#a3e635' : '#67e8f9';
-  ctx.shadowColor = ctx.fillStyle;
-  ctx.shadowBlur = 26;
-  ctx.fillText(c.grade, 840, 380);
-  ctx.shadowBlur = 0;
-  ctx.font = `bold 13px ${MONO_FONT}`;
-  ctx.fillStyle = '#94a3b8';
-  ctx.fillText('GRADE', 840, 404);
-  ctx.textAlign = 'left';
-  ctx.font = `18px ${MONO_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.fillText(`STARS  ${c.stars} × 100  =  ${c.starScore}`, 420, 330);
-  ctx.fillText(`TIME BONUS  ${c.timeBonus}`, 420, 362);
-  ctx.fillText(`LEVEL BONUS  ${c.levelBonus}`, 420, 394);
-  ctx.font = `bold 22px ${MONO_FONT}`;
+  ctx.fillText('LEVEL CLEAR!', 640, 190);
+  drawStars(ctx, 640, 268, info.stars);
   ctx.fillStyle = '#fde68a';
-  ctx.fillText(`TOTAL  ${g.score}`, 420, 436);
-  ctx.textAlign = 'center';
-  ctx.font = `15px ${MONO_FONT}`;
-  ctx.fillStyle = '#c4b5fd';
-  ctx.fillText(`NEXT: LEVEL ${g.levelIndex + 2}/9 · ${c.nextName}`, W / 2, 472);
-}
-
-function drawOver(ctx, g) {
-  ctx.fillStyle = 'rgba(2, 4, 20, 0.72)';
-  ctx.fillRect(0, 0, W, H);
-  // Panel behind the text so the world (e.g. the black hole's bright
-  // accretion ring) never fights the score and stats for attention.
-  panel(ctx, 340, 185, 600, 440);
-  ctx.textAlign = 'center';
-  ctx.font = `900 64px ${TITLE_FONT}`;
-  ctx.fillStyle = g.won ? '#a3e635' : '#fb7185';
-  ctx.shadowColor = g.won ? '#65a30d' : '#e11d48';
-  ctx.shadowBlur = 30;
-  ctx.fillText(g.won ? 'MISSION COMPLETE' : 'MISSION OVER', W / 2, 250);
-  ctx.shadowBlur = 0;
-  ctx.font = `22px ${MONO_FONT}`;
-  ctx.fillStyle = '#e0f2fe';
-  ctx.fillText(`FINAL SCORE  ${g.score}`, W / 2, 306);
-  if (g.won && g.score >= g.best && g.score > 0) {
-    ctx.fillStyle = '#fbbf24';
-    ctx.font = `bold 18px ${MONO_FONT}`;
-    ctx.fillText('★ NEW BEST! ★', W / 2, 342);
-  }
-  ctx.fillStyle = '#fde68a';
-  ctx.font = `20px ${MONO_FONT}`;
-  ctx.fillText(`BEST  ${Math.max(g.best, g.score)}`, W / 2, g.won && g.score >= g.best ? 372 : 348);
-  // Stats grid.
-  const s = g.stats || { levels: g.levelIndex + 1, stars: 0, bestCombo: 0, shots: 0, time: 0 };
-  const stats = [
-    [`SYSTEMS`, `${s.levels}/9`],
-    [`STARS`, `${s.stars}`],
-    [`BEST COMBO`, `x${Math.max(1, s.bestCombo)}`],
-    [`LAUNCHES`, `${s.shots}`],
+  ctx.font = `900 22px ${TITLE_FONT}`;
+  ctx.fillText(`GRADE ${info.grade}`, 640, 322);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 30px ${MONO_FONT}`;
+  ctx.fillText(`SCORE  ${g.score}`, 640, 366);
+  const rows = [
+    ['LINES BLASTED', String(g.linesCleared)],
+    ['GEMS COLLECTED', String(Object.values(g.collected).reduce((a, b) => a + b, 0))],
+    ['BEST COMBO', `x${g.bestCombo}`],
+    ['PIECES PLACED', String(g.piecesPlaced)],
   ];
-  const sy = g.won && g.score >= g.best ? 420 : 396;
-  ctx.font = `bold 14px ${MONO_FONT}`;
-  for (let i = 0; i < stats.length; i++) {
-    const x = 400 + (i % 2) * 260;
-    const y = sy + Math.floor(i / 2) * 56;
-    ctx.fillStyle = '#94a3b8';
+  ctx.font = `700 17px ${BODY_FONT}`;
+  let y = 404;
+  for (const [k, v] of rows) {
+    ctx.fillStyle = 'rgba(255,255,255,0.65)';
     ctx.textAlign = 'left';
-    ctx.fillText(stats[i][0], x, y);
-    ctx.fillStyle = '#e0f2fe';
-    ctx.font = `bold 24px ${MONO_FONT}`;
-    ctx.fillText(stats[i][1], x, y + 28);
-    ctx.font = `bold 14px ${MONO_FONT}`;
+    ctx.fillText(k, 440, y);
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'right';
+    ctx.fillText(v, 840, y);
+    y += 28;
   }
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#c4b5fd';
-  ctx.font = `18px ${MONO_FONT}`;
-  ctx.fillText(g.won ? 'You conquered every system. The galaxy is yours, pilot.' : `You reached LEVEL ${g.levelIndex + 1} · ${g.level.name}`, W / 2, sy + 132);
-  const blink = 0.55 + 0.45 * Math.sin(g.time * 4);
-  ctx.globalAlpha = blink;
-  ctx.font = `bold 22px ${MONO_FONT}`;
-  ctx.fillStyle = '#a5f3fc';
-  ctx.fillText('PRESS R TO FLY AGAIN', W / 2, sy + 176);
-  ctx.globalAlpha = 1;
+  const last = g.level && g.level.n >= 30;
+  drawButton(ctx, g, last ? 'victory' : 'next', 490, 516, 300, 56, last ? '🏆  TROPHY!' : '▶  NEXT LEVEL', '#22c55e', '#14532d', '#fff', 22);
+  drawButton(ctx, g, 'menu', 340, 516, 120, 56, 'MENU', '#64748b', '#334155', '#fff', 18);
 }
 
-export function render(ctx, g) {
-  const t = g.time;
+function drawSoClose(ctx, g) {
+  drawOverlayPanel(ctx, g, 340, 120, 600, 480);
+  ctx.fillStyle = '#f87171';
+  ctx.font = `900 54px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('So Close!', 640, 190);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `700 19px ${BODY_FONT}`;
+  ctx.fillText('No piece fits anywhere — the run is over.', 640, 232);
+  // Remaining targets.
+  const targets = g.level ? g.level.targets : {};
+  let y = 286;
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 18px ${TITLE_FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('GEMS STILL MISSING', 420, y);
+  y += 34;
+  for (const id of Object.keys(targets)) {
+    const c = colorById(id);
+    const need = targets[id];
+    const have = Math.min(g.collected[id] || 0, need);
+    const left = need - have;
+    if (left <= 0) continue;
+    drawGemShape(ctx, c.shape, 446, y, 17, id, g.time, y);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 18px ${TITLE_FONT}`;
+    ctx.fillText(`${c.name}  × ${left} more`, 476, y + 1);
+    y += 38;
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 26px ${MONO_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText(`SCORE  ${g.score}`, 640, y + 26);
+  drawButton(ctx, g, 'retry', 490, 500, 300, 56, '↻  TRY AGAIN', '#22c55e', '#14532d', '#fff', 22);
+  drawButton(ctx, g, 'menu2', 340, 500, 120, 56, 'MENU', '#64748b', '#334155', '#fff', 18);
+}
+
+function drawVictory(ctx, g) {
+  drawOverlayPanel(ctx, g, 300, 90, 680, 540);
   ctx.save();
-  if (g.shake > 0.2) {
+  ctx.globalAlpha = 0.4 + 0.2 * Math.sin(g.time * 2);
+  ctx.fillStyle = '#fbbf24';
+  ctx.beginPath();
+  ctx.arc(640, 190, 58, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.font = '84px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('🏆', 640, 206);
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 46px ${TITLE_FONT}`;
+  ctx.fillText('YOU WIN THE TROPHY!', 640, 300);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `700 19px ${BODY_FONT}`;
+  ctx.fillText('All 30 levels cleared. You are the AMBLAST master!', 640, 338);
+  ctx.font = `900 30px ${MONO_FONT}`;
+  ctx.fillText(`FINAL SCORE  ${g.score}`, 640, 388);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = `700 18px ${BODY_FONT}`;
+  ctx.fillText(`${g.starsTotal}★ earned  •  ${g.linesCleared} lines blasted  •  best combo x${g.bestCombo}`, 640, 424);
+  drawButton(ctx, g, 'again', 490, 500, 300, 56, '↻  PLAY AGAIN', '#22c55e', '#14532d', '#fff', 22);
+  drawButton(ctx, g, 'menu3', 340, 500, 120, 56, 'MENU', '#64748b', '#334155', '#fff', 18);
+}
+
+function drawClassicOver(ctx, g) {
+  drawOverlayPanel(ctx, g, 340, 150, 600, 420);
+  ctx.fillStyle = '#fde68a';
+  ctx.font = `900 46px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('GAME OVER', 640, 230);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 30px ${MONO_FONT}`;
+  ctx.fillText(`SCORE  ${g.score}`, 640, 300);
+  ctx.fillStyle = g.score >= g.best ? '#4ade80' : 'rgba(255,255,255,0.8)';
+  ctx.font = `900 22px ${TITLE_FONT}`;
+  ctx.fillText(g.score >= g.best && g.score > 0 ? '★ NEW BEST! ★' : `BEST  ${g.best}`, 640, 344);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = `700 18px ${BODY_FONT}`;
+  ctx.fillText(`${g.linesCleared} lines blasted  •  best combo x${g.bestCombo}`, 640, 384);
+  drawButton(ctx, g, 'again-classic', 490, 470, 300, 56, '↻  PLAY AGAIN', '#22c55e', '#14532d', '#fff', 22);
+  drawButton(ctx, g, 'menu4', 340, 470, 120, 56, 'MENU', '#64748b', '#334155', '#fff', 18);
+}
+
+function drawMenuOverlay(ctx, g) {
+  drawOverlayPanel(ctx, g, 440, 180, 400, 360);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 34px ${TITLE_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('PAUSED', 640, 240);
+  drawButton(ctx, g, 'resume', 490, 280, 300, 52, '▶  RESUME', '#22c55e', '#14532d', '#fff', 20);
+  drawButton(ctx, g, 'restart2', 490, 344, 300, 52, '↻  RESTART LEVEL', '#f59e0b', '#92400e', '#fff', 20);
+  drawButton(ctx, g, 'quit', 490, 408, 300, 52, '🏠  MAIN MENU', '#64748b', '#334155', '#fff', 20);
+}
+
+// ---- Master render ----
+export function render(ctx, g) {
+  ctx.save();
+  if (g.shake > 0.5) {
     ctx.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
   }
-  drawBackground(ctx, g, t);
-  if (g.mode === 'title') {
-    drawTitle(ctx, g, t);
-    ctx.restore();
-    return;
+  g.ui = { buttons: [], mapNodes: [] };
+  drawBackground(ctx, g);
+  const mode = g.mode;
+  if (mode === 'title') {
+    drawTitle(ctx, g);
+  } else if (mode === 'adventure') {
+    drawAdventure(ctx, g);
+  } else {
+    drawBoard(ctx, g);
+    drawTray(ctx, g);
+    drawHUD(ctx, g);
+    drawSide(ctx, g);
+    drawDrag(ctx, g);
+    drawParticles(ctx, g);
+    if (mode === 'howto') drawHowto(ctx, g);
+    else if (mode === 'clear') drawClear(ctx, g);
+    else if (mode === 'soClose') drawSoClose(ctx, g);
+    else if (mode === 'victory') drawVictory(ctx, g);
+    else if (mode === 'classicOver') drawClassicOver(ctx, g);
+    else if (mode === 'menu') drawMenuOverlay(ctx, g);
   }
-  for (const p of g.planets) drawPlanet(ctx, p, t);
-  for (const a of g.asteroids) drawAsteroid(ctx, a, t);
-  for (const p of g.powerupsLeft) {
-    if (!p.taken) drawPowerup(ctx, p, t);
-  }
-  for (const s of g.starsLeft) {
-    if (!s.taken) drawStar(ctx, s.x, s.y, t, s.phase);
-  }
-  drawTrajectory(ctx, g);
-  drawTrail(ctx, g);
-  drawParticles(ctx, g);
-  drawRings(ctx, g);
-  if (g.mode !== 'over') drawProbe(ctx, g, t);
-  drawPopups(ctx, g);
-  drawHUD(ctx, g);
-  if (g.mode === 'brief') drawBrief(ctx, g);
-  if (g.mode === 'clear') drawClear(ctx, g);
-  if (g.mode === 'over') drawOver(ctx, g);
   ctx.restore();
+}
+
+// Seed the ambient background: floating gems, sparkles, confetti.
+export function seedBackground(seed) {
+  const rng = mulberry32(seed);
+  const shapes = ['star4', 'penta', 'star6', 'bloom', 'diamond', 'hexa'];
+  const colors = ['green', 'orange', 'red', 'purple', 'blue', 'yellow'];
+  const bgFloaters = [];
+  for (let i = 0; i < 12; i++) {
+    bgFloaters.push({
+      x: range(rng, 40, W - 40), y: range(rng, 0, H),
+      r: range(rng, 14, 30), shape: shapes[Math.floor(rng() * shapes.length)],
+      color: colors[Math.floor(rng() * colors.length)],
+      speed: range(rng, 4, 12), a: range(rng, 0.10, 0.22), phase: rng() * Math.PI * 2,
+    });
+  }
+  const bgSparkles = [];
+  for (let i = 0; i < 70; i++) {
+    bgSparkles.push({ x: rng() * W, y: rng() * H, r: range(rng, 1, 2.6), speed: range(rng, 0.6, 2.2), phase: rng() * Math.PI * 2 });
+  }
+  const bgConfetti = [];
+  for (let i = 0; i < 26; i++) {
+    bgConfetti.push({ x: rng() * W, y: rng() * H, r: range(rng, 2, 4.5), speed: range(rng, 8, 22), phase: rng() * Math.PI * 2, color: COLORS[Math.floor(rng() * COLORS.length)].main });
+  }
+  return { bgFloaters, bgSparkles, bgConfetti };
 }

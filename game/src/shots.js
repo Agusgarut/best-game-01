@@ -1,233 +1,179 @@
-// ORBITAL staged screenshots: deterministic scenes rendered by the real
-// game code behind ?shot=start|play|power|end&seed=1. Nothing here is a mock
+// AMBLAST staged screenshots: deterministic scenes rendered by the real
+// game code behind ?shot=start|play|clear|end&seed=1. Nothing here is a mock
 // image — each scene is a real game state, frozen at a fixed clock time,
 // so the same URL always renders the same frame.
 
-import { mulberry32, range } from './rng.js';
-import { LEVELS, instantiateLevel } from './levels.js';
+import { mulberry32 } from './rng.js';
+import { GRID, COLORS, PIECES, buildLevel } from './levels.js';
+import { L } from './render.js';
 
-// Rebuild the scenery deterministically for a seed.
-export function seedScenery(g, seed) {
-  const rng = mulberry32(seed);
-  g.starfield = [];
-  for (let i = 0; i < 150; i++) {
-    g.starfield.push({
-      x: rng() * 1280,
-      y: rng() * 720,
-      r: range(rng, 0.6, 2.1),
-      phase: rng() * Math.PI * 2,
-      speed: range(rng, 0.4, 1.6),
-      a: range(rng, 0.4, 1),
-    });
-  }
-  // Near stars: bigger, brighter, some with cross sparkles.
-  g.starfieldNear = [];
-  for (let i = 0; i < 42; i++) {
-    g.starfieldNear.push({
-      x: rng() * 1280,
-      y: rng() * 720,
-      r: range(rng, 1.6, 3.2),
-      phase: rng() * Math.PI * 2,
-      speed: range(rng, 0.3, 1.1),
-      a: range(rng, 0.55, 1),
-    });
-  }
-  const nebColors = [
-    'rgba(124, 58, 237, 0.20)',
-    'rgba(13, 148, 136, 0.18)',
-    'rgba(219, 39, 119, 0.14)',
-    'rgba(249, 115, 22, 0.10)',
-    'rgba(59, 130, 246, 0.13)',
-    'rgba(34, 197, 94, 0.09)',
-  ];
-  g.nebulae = [];
-  for (let i = 0; i < 6; i++) {
-    g.nebulae.push({
-      x: rng() * 1280,
-      y: rng() * 720,
-      r: range(rng, 200, 380),
-      color: nebColors[i % nebColors.length],
-    });
-  }
-  // Distant galaxies.
-  const galColors = [
-    'rgba(167, 139, 250, 0.55)',
-    'rgba(45, 212, 191, 0.5)',
-    'rgba(244, 114, 182, 0.5)',
-    'rgba(96, 165, 250, 0.45)',
-  ];
-  g.galaxies = [];
-  for (let i = 0; i < 4; i++) {
-    g.galaxies.push({
-      x: 120 + rng() * 1040,
-      y: 90 + rng() * 540,
-      r: range(rng, 14, 30),
-      rot: rng() * Math.PI,
-      color: galColors[i % galColors.length],
-    });
+// Frozen clock: sin(2.244 * 3.5) ≈ 1, so blinking prompts render at full
+// brightness, and every idle bob/sparkle lands on the same frame.
+const FROZEN_T = 2.244;
+
+function resetCommon(g) {
+  g.time = FROZEN_T;
+  g.shake = 0;
+  g.particles = [];
+  g.popups = [];
+  g.banner = null;
+  g.lineFlash = null;
+  g.pendingClear = null;
+  g.drag = null;
+  g.selected = null;
+  g.locked = false;
+  g.muted = true;
+}
+
+function fillBoard(g, rng, density) {
+  // Scatter colored blocks over the empty cells until the board looks busy.
+  let guard = 0;
+  let target = Math.floor(GRID * GRID * density);
+  let filled = 0;
+  while (filled < target && guard++ < 500) {
+    const r = Math.floor(rng() * GRID);
+    const c = Math.floor(rng() * GRID);
+    if (g.grid[r][c] === null) {
+      g.grid[r][c] = { kind: 'block', color: COLORS[Math.floor(rng() * COLORS.length)].id };
+      filled++;
+    }
   }
 }
 
-function setupLevel(g, i) {
-  g.levelIndex = i;
-  g.level = LEVELS[i];
-  const live = instantiateLevel(g.level);
-  g.planets = live.planets;
-  g.asteroids = live.asteroids;
-  g.powerupsLeft = live.powerups;
-  g.starsLeft = g.level.stars.map((s, k) => ({
-    x: s.x, y: s.y, taken: false, phase: k * 1.3,
-  }));
-  g.fuelMax = g.level.fuel;
+function findPiece(name) {
+  return PIECES.find((p) => p.name === name);
+}
+
+function makeTray(specs) {
+  return specs.map(([name, color], i) => ({ shape: findPiece(name), color, used: false, id: i }));
 }
 
 // Put the game into a frozen, photogenic state for a screenshot.
 // Returns true when a known shot was applied.
 export function applyShot(g, name, seed) {
-  seedScenery(g, seed);
-  // Frozen clock chosen so the blinking prompts ("CLICK OR PRESS SPACE",
-  // "PRESS R TO FLY AGAIN") render at full brightness: sin(3.53 * 4) ≈ 1.
-  g.time = 3.53;
-  g.shake = 0;
-  g.trail = [];
-  g.particles = [];
-  g.rings = [];
-  g.popups = [];
-  g.charging = false;
-  g.power = 0;
-  g.shield = false;
-  g.slowTimer = 0;
-  g.hint = '';
+  const rng = mulberry32(seed * 101 + 7);
+  resetCommon(g);
 
   if (name === 'start') {
     g.mode = 'title';
     g.best = 4860;
+    g.maxUnlocked = 7;
+    g.stars = { 1: 3, 2: 3, 3: 2, 4: 3, 5: 2, 6: 1 };
+    g.starsTotal = 14;
     g.score = 0;
     return true;
   }
 
   if (name === 'play') {
-    // Level 6 ASTEROID BELT, mid-flight: probe slingshotting past the
-    // orbiting teal planet, trajectory curving toward the next star,
-    // asteroids drifting, shield power-up on screen, combo running.
-    setupLevel(g, 5);
+    // Level 7 GEM RUSH, mid-game: a busy colorful board, three pieces in
+    // the tray, one I3 piece mid-drag with a green ghost preview, combo x3.
+    const level = buildLevel(7);
+    g.classic = false;
+    g.level = level;
+    g.grid = level.grid;
+    g.collected = {};
+    for (const id of Object.keys(level.targets)) g.collected[id] = 0;
+    g.collected.green = 4;
+    g.collected.orange = 3;
+    g.collected.red = 2;
+    fillBoard(g, rng, 0.42);
+    // Clear a landing spot for the dragged I3 and keep it empty.
+    for (const [dr, dc] of [[0, 0], [0, 1], [0, 2]]) g.grid[2 + dr][2 + dc] = null;
     g.score = 2840;
-    g.combo = 4;
-    g.comboTimer = 3.2;
+    g.combo = 3;
+    g.comboTimer = 2.5;
     g.bestCombo = 4;
-    g.lives = 3;
-    g.fuel = 74;
-    g.levelTime = 18.6;
-    g.shotsUsed = 5;
-    g.starsLeft.forEach((s, i) => { s.taken = i < 2; });
-    g.probe = { x: 660, y: 250, vx: 240, vy: 150 };
-    g.aim = { x: 1080, y: 180 };
-    g.aimAngle = Math.atan2(180 - 250, 1080 - 660);
-    g.mode = 'aim';
-    g.charging = true;
-    g.power = 0.72;
-    // A curved trail behind the probe, as if it just whipped around a planet.
-    for (let i = 0; i < 26; i++) {
-      const f = i / 26;
-      g.trail.push({
-        x: 660 - f * 300 + Math.sin(f * 9) * 26,
-        y: 250 - f * 170 + f * f * 120,
-        life: 0.5 * (1 - f),
-        max: 0.5,
-        color: '#67e8f9',
-        size: 5,
-      });
-    }
-    // Sparkle burst where the last star was collected.
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2;
+    g.linesCleared = 5;
+    g.piecesPlaced = 12;
+    g.tray = makeTray([['SQ2', 'green'], ['I3', 'blue'], ['L3A', 'red']]);
+    const dragPiece = g.tray[1];
+    g.drag = { piece: dragPiece, x: 315, y: 239, hover: { r: 2, c: 2 }, fits: true, moved: true, slot: 1 };
+    // Sparkle burst where the last gem was collected + score popup.
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
       g.particles.push({
-        x: 520 + Math.cos(a) * 18,
-        y: 120 + Math.sin(a) * 18,
-        vx: 0, vy: 0,
-        life: 0.6, max: 0.6,
-        color: i % 2 ? '#fde68a' : '#fbbf24',
-        size: 3.5,
+        kind: 'spark', x: 300 + Math.cos(a) * 26, y: 200 + Math.sin(a) * 26,
+        vx: 0, vy: 0, life: 0.6, max: 0.6, color: i % 2 ? '#fde68a' : '#fbbf24', size: 4,
       });
     }
-    g.popups.push({
-      x: 520, y: 94, text: '+400  COMBO x4',
-      life: 0.9, max: 0.9, color: '#fbbf24', big: true,
-    });
-    g.hint = 'RELEASE to slingshot — gravity bends your path';
+    g.popups.push({ x: 360, y: 150, text: '+400  COMBO x3', color: '#fbbf24', big: true, life: 0.9, max: 0.9 });
+    g.mode = 'play';
+    g.tip = 'Corners love L-pieces. Big squares love 3x3s.';
     return true;
   }
 
-  if (name === 'power') {
-    // Level 8 GRAVITY WELL: the probe just grabbed the SHIELD power-up
-    // while SLOW-MO is running — burst, shockwave ring and badge on screen.
-    setupLevel(g, 7);
+  if (name === 'clear') {
+    // Level 8 CROSSFIRE, the big blast: row 3 and column 5 flash white-hot,
+    // shards and rings frozen mid-explosion, gems flying to the target list.
+    const level = buildLevel(8);
+    g.classic = false;
+    g.level = level;
+    g.grid = level.grid;
+    g.collected = {};
+    for (const id of Object.keys(level.targets)) g.collected[id] = 0;
+    g.collected.green = 5;
+    g.collected.orange = 4;
+    g.collected.red = 3;
+    fillBoard(g, rng, 0.38);
+    // Force row 3 and column 5 full so the flash reads as a real clear.
+    for (let c = 0; c < GRID; c++) {
+      if (g.grid[3][c] === null) g.grid[3][c] = { kind: 'block', color: COLORS[c % COLORS.length].id };
+    }
+    for (let r = 0; r < GRID; r++) {
+      if (g.grid[r][5] === null) g.grid[r][5] = { kind: 'block', color: COLORS[r % COLORS.length].id };
+    }
+    // One gem in the cleared row so a gem flies to the target panel.
+    g.grid[3][2] = { kind: 'gem', color: 'green' };
+    g.grid[3][6] = { kind: 'gem', color: 'red' };
     g.score = 5210;
-    g.combo = 2;
-    g.comboTimer = 2.6;
+    g.combo = 5;
+    g.comboTimer = 2.8;
     g.bestCombo = 5;
-    g.lives = 2;
-    g.fuel = 45;
-    g.levelTime = 34.2;
-    g.shotsUsed = 9;
-    g.starsLeft.forEach((s, i) => { s.taken = i < 3; });
-    g.powerupsLeft.forEach((p) => { p.taken = p.kind === 'shield'; });
-    g.shield = true;
-    g.slowTimer = 3.4;
-    g.probe = { x: 700, y: 300, vx: 180, vy: -90 };
-    g.aim = { x: 1080, y: 360 };
-    g.aimAngle = Math.atan2(360 - 300, 1080 - 700);
-    g.mode = 'aim';
-    g.charging = true;
-    g.power = 0.5;
-    for (let i = 0; i < 26; i++) {
-      const a = (i / 26) * Math.PI * 2;
+    g.linesCleared = 9;
+    g.piecesPlaced = 18;
+    g.tray = makeTray([['T', 'purple'], ['SQ3', 'yellow'], ['I4', 'orange']]);
+    g.lineFlash = { rows: [3], cols: [5], life: 0.25, max: 0.4 };
+    // Frozen explosion: shards, rings, flying gems, big popup, banner.
+    for (let i = 0; i < 22; i++) {
+      const a = rng() * Math.PI * 2;
+      const d = 20 + rng() * 90;
       g.particles.push({
-        x: 700 + Math.cos(a) * (14 + (i % 3) * 10),
-        y: 300 + Math.sin(a) * (14 + (i % 3) * 10),
-        vx: 0, vy: 0,
-        life: 0.7, max: 0.7,
-        color: i % 2 ? '#22d3ee' : '#a5f3fc',
-        size: 3.5,
+        kind: 'shard', x: 360 + Math.cos(a) * d, y: 270 + Math.sin(a) * d,
+        vx: 0, vy: 0, life: 0.6, max: 0.6,
+        color: COLORS[Math.floor(rng() * COLORS.length)].main,
+        size: 6 + rng() * 7, rot: rng() * Math.PI, vr: 0,
       });
     }
-    g.rings.push({ x: 700, y: 300, r: 30, max: 110, life: 0.5, maxLife: 0.5, color: '#22d3ee' });
-    g.popups.push({
-      x: 700, y: 252, text: 'SHIELD ONLINE',
-      life: 0.9, max: 0.9, color: '#67e8f9', big: true,
-    });
-    for (let i = 0; i < 18; i++) {
-      const f = i / 18;
-      g.trail.push({
-        x: 700 - f * 260 + Math.sin(f * 8) * 20,
-        y: 300 - f * 140 + f * f * 90,
-        life: 0.5 * (1 - f),
-        max: 0.5,
-        color: '#a78bfa',
-        size: 5,
-      });
-    }
-    g.hint = 'SHIELD eats one crash · SLOW-MO is running';
+    g.particles.push({ kind: 'ring', x: 360, y: 270, r: 70, life: 0.4, max: 0.45, color: '#ffffff' });
+    g.particles.push({ kind: 'ring', x: 420, y: 270, r: 46, life: 0.35, max: 0.45, color: '#fde68a' });
+    g.particles.push({ kind: 'gemfly', x: 300, y: 250, vx: 0, vy: 0, life: 0.4, max: 0.55, color: 'green', size: 17, phase: 0, tx: 656, ty: 140, r: 10 });
+    g.particles.push({ kind: 'gemfly', x: 430, y: 290, vx: 0, vy: 0, life: 0.45, max: 0.55, color: 'red', size: 17, phase: 1, tx: 656, ty: 228, r: 10 });
+    g.popups.push({ x: 340, y: 120, text: '+1450  COMBO x5', color: '#fde68a', big: true, life: 0.9, max: 0.9 });
+    g.banner = { text: 'COMBO x5!', sub: '2 lines blasted', color: '#fb923c', life: 0.8, max: 1.0, x: 360, y: 330 };
+    g.shake = 0;
+    g.mode = 'play';
+    g.tip = 'Clear two lines at once for a huge bonus!';
     return true;
   }
 
   if (name === 'end') {
-    // Victory after conquering all nine systems: MISSION COMPLETE,
-    // final score, stats grid, NEW BEST tag.
-    setupLevel(g, 8);
-    g.score = 12480;
-    g.best = 12480;
-    g.lives = 3;
-    g.fuel = 60;
-    g.levelTime = 88.4;
-    g.shotsUsed = 21;
-    g.bestCombo = 6;
-    g.starsLeft.forEach((s) => { s.taken = true; });
-    g.probe = { x: 640, y: 360, vx: 0, vy: 0 };
-    g.aim = { x: 640, y: 200 };
-    g.mode = 'over';
-    g.won = true;
-    g.stats = { levels: 9, stars: 52, bestCombo: 6, shots: 21, time: 412 };
+    // Level 7 cleared: LEVEL CLEAR! with three stars, grade S, score and
+    // a stats grid — the victory moment.
+    const level = buildLevel(7);
+    g.classic = false;
+    g.level = level;
+    g.grid = level.grid;
+    g.collected = {};
+    for (const id of Object.keys(level.targets)) g.collected[id] = level.targets[id];
+    g.score = 4860;
+    g.best = 4860;
+    g.combo = 1;
+    g.bestCombo = 5;
+    g.linesCleared = 8;
+    g.piecesPlaced = 21;
+    g.tray = makeTray([['SQ2', 'green'], ['I3', 'blue'], ['L3A', 'red']]);
+    g.clearInfo = { stars: 3, grade: 'S' };
+    g.mode = 'clear';
     return true;
   }
 
